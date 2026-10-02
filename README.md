@@ -9,15 +9,15 @@ Install through your host's package manager. The npm package is `jev-agent-tools
 ### pi
 
 ```sh
-pi install npm:jev-agent-tools@0.1.3
+pi install npm:jev-agent-tools@0.1.4
 # Project-local installation:
-pi install -l npm:jev-agent-tools@0.1.3
+pi install -l npm:jev-agent-tools@0.1.4
 ```
 
 ### omp
 
 ```sh
-omp plugin install jev-agent-tools@0.1.3
+omp plugin install jev-agent-tools@0.1.4
 ```
 
 ### Requirements and compatibility
@@ -26,7 +26,7 @@ Requires Node.js 24 or later. Supported host baselines are pi 0.87.1 and omp 18.
 
 The published `jev-agent-tools@0.1.3` package was also checked with **pi 1.0.0** on Linux under Node.js 24.15.0: npm installation, TypeScript checking against the host types, all six tools in the actual CLI, and reading-guide injection passed. The CLI smoke used a simulated conversation provider and Jev endpoint; it verifies host integration, not live model accuracy or every tool scenario.
 
-**pi 1.0.0 packaging warning:** this release declares `@sinclair/typebox` in `dependencies`, while pi expects host-provided extension modules in `peerDependencies` with a `"*"` range. pi warns that separately installed copies can create duplicate runtime modules. The warning did not prevent the smoke from completing; it remains a packaging issue, not a claim of warning-free compatibility.
+**pi 1.0.0 packaging warning:** the package declares `@sinclair/typebox` in `dependencies`, while pi expects host-provided extension modules in `peerDependencies` with a `"*"` range. pi warns that separately installed copies can create duplicate runtime modules. The warning did not prevent the smoke from completing; it remains a packaging issue, not a claim of warning-free compatibility.
 
 ## Configure
 
