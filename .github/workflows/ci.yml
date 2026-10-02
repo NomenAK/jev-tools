@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Node 24 offline checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies (including native optional packages)
+        run: npm ci --include=optional
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Import boundaries
+        run: npm run check:imports
+      - name: Lint
+        run: npm run lint
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install pytest for native identity checks
+        run: python -m pip install pytest
+      - name: Install isolated Vitest 4 identity runner
+        run: npm install --prefix "$HOME/.cache/jev-tools/vitest4-identity" vitest@4.1.11
+      - name: Install isolated Vitest 5 identity runner
+        run: npm install --prefix "$HOME/.cache/jev-tools/vitest5-identity" vitest@5.0.3
+      - name: Install isolated additional identity runners
+        run: npm install --prefix "$HOME/.cache/jev-tools/additional-identities" ava@6.4.1 mocha@11.8.0 deno@2.9.6
+      - name: Offline tests
+        run: AVA_EXECUTABLE="$HOME/.cache/jev-tools/additional-identities/node_modules/.bin/ava" MOCHA_EXECUTABLE="$HOME/.cache/jev-tools/additional-identities/node_modules/.bin/mocha" DENO_EXECUTABLE="$HOME/.cache/jev-tools/additional-identities/node_modules/.bin/deno" VITEST4_EXECUTABLE="$HOME/.cache/jev-tools/vitest4-identity/node_modules/.bin/vitest" VITEST5_EXECUTABLE="$HOME/.cache/jev-tools/vitest5-identity/node_modules/.bin/vitest" npm test

@@ -1,0 +1,25 @@
+{
+  "files": {
+    "includes": [
+      "src/**",
+      "test/**",
+      "scripts/**"
+    ]
+  },
+  "formatter": {
+    "indentStyle": "space"
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true
+    }
+  },
+  "assist": {
+    "actions": {
+      "source": {
+        "organizeImports": "on"
+      }
+    }
+  }
+}

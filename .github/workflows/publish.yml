@@ -1,0 +1,205 @@
+# Maintainer prerequisites: protect the npm-publish environment with an approval
+# gate, and set its EXPECTED_PACKAGE_INTEGRITY variable to the independently
+# verified candidate's SHA-512 integrity before approval. Prepare that candidate
+# with the same pinned toolchain as this workflow: Node.js 24.15.0 / npm 11.12.1.
+# A rerun skips publication only if the existing version's registry integrity
+# equals the approved tarball; mismatches and inconclusive lookups fail.
+# First publication may use the temporary NPM_BOOTSTRAP_TOKEN environment secret.
+# Once trusted publishing (OIDC) is configured for publish.yml / npm-publish with
+# permission to publish, revoke the token, delete the secret, and remove the
+# marked bootstrap step including its sole secret env reference.
+# The GitHub Release remains a draft until the published package is verified.
+
+name: Publish
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate release tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.15.0
+      - name: Check tag, package version and reviewed main history
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const { version } = JSON.parse(readFileSync('package.json', 'utf8'));
+          const tag = process.env.RELEASE_TAG;
+          if (!/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(tag) || tag !== `v${version}`) {
+            throw new Error(`Tag ${tag} must be v${version} (stable SemVer only).`);
+          }
+          console.log(`Validated ${tag} against package version ${version}.`);
+          NODE
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "$RELEASE_SHA^{commit}")"
+          git merge-base --is-ancestor HEAD refs/remotes/origin/main
+
+  checks:
+    name: Public checks
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  prepare:
+    name: Pack release candidate once
+    needs: checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.15.0
+      - name: Pin npm for packing and publishing
+        run: npm install --global npm@11.12.1
+      - name: Install dependencies
+        run: npm ci --include=optional
+      - name: Pack and record integrity, file list and release notes
+        run: |
+          mkdir release-artifact
+          node --version > release-artifact/node-version.txt
+          npm --version > release-artifact/npm-version.txt
+          npm pack --json --pack-destination release-artifact > release-artifact/pack.json
+          node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto';
+          import { readFileSync, writeFileSync } from 'node:fs';
+          const [pack, ...extra] = JSON.parse(readFileSync('release-artifact/pack.json', 'utf8'));
+          if (!pack || extra.length) throw new Error('Expected exactly one packed tarball.');
+          const integrity = `sha512-${createHash('sha512').update(readFileSync(`release-artifact/${pack.filename}`)).digest('base64')}`;
+          if (integrity !== pack.integrity) throw new Error('Pack integrity does not match tarball bytes.');
+          writeFileSync('release-artifact/integrity.txt', `${integrity}\n`);
+          writeFileSync('release-artifact/files.txt', pack.files.map(file => file.path).join('\n') + '\n');
+          const lines = readFileSync('CHANGELOG.md', 'utf8').split('\n');
+          const start = lines.findIndex(line => line === `## [${pack.version}]` || line.startsWith(`## [${pack.version}] - `));
+          if (start < 0) throw new Error(`Missing CHANGELOG section for ${pack.version}.`);
+          let end = start + 1;
+          while (end < lines.length && !/^## |^\[[^\]]+\]:/.test(lines[end])) end++;
+          const notes = lines.slice(start + 1, end).join('\n').trim();
+          if (!notes) throw new Error('Release notes must not be empty.');
+          writeFileSync('release-artifact/notes.md', `${notes}\n`);
+          console.log(`Packed ${pack.name}@${pack.version}: ${integrity}; ${pack.files.length} files.`);
+          NODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-candidate
+          path: release-artifact/
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish approved tarball
+    needs: prepare
+    runs-on: ubuntu-latest
+    environment: npm-publish
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.15.0
+          registry-url: https://registry.npmjs.org
+      - name: Pin npm for packing and publishing
+        run: npm install --global npm@11.12.1
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-candidate
+          path: release-artifact
+      - name: Verify tarball against independently approved integrity
+        env:
+          EXPECTED_PACKAGE_INTEGRITY: ${{ vars.EXPECTED_PACKAGE_INTEGRITY }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { createHash } from 'node:crypto';
+          import { readFileSync, appendFileSync } from 'node:fs';
+          const [pack] = JSON.parse(readFileSync('release-artifact/pack.json', 'utf8'));
+          const integrity = `sha512-${createHash('sha512').update(readFileSync(`release-artifact/${pack.filename}`)).digest('base64')}`;
+          const recorded = readFileSync('release-artifact/integrity.txt', 'utf8').trim();
+          if (integrity !== recorded || integrity !== pack.integrity || integrity !== process.env.EXPECTED_PACKAGE_INTEGRITY) {
+            throw new Error('Tarball integrity differs from recorded or independently approved integrity. Set EXPECTED_PACKAGE_INTEGRITY in npm-publish before approval.');
+          }
+          appendFileSync(process.env.GITHUB_ENV, `PACKAGE_SPEC=${pack.name}@${pack.version}\nTARBALL=release-artifact/${pack.filename}\nPACKAGE_INTEGRITY=${integrity}\n`);
+          console.log(`Approved ${pack.name}@${pack.version}: ${integrity}`);
+          NODE
+      - name: Check registry idempotence (only E404 means absent)
+        id: registry
+        run: |
+          node --input-type=module <<'NODE'
+          import { spawnSync } from 'node:child_process';
+          import { appendFileSync } from 'node:fs';
+          const result = spawnSync('npm', ['view', process.env.PACKAGE_SPEC, 'dist.integrity', '--json', '--registry=https://registry.npmjs.org'], { encoding: 'utf8' });
+          if (result.error) throw result.error;
+          let value;
+          try { value = JSON.parse(result.stdout); } catch {
+            throw new Error(`Registry lookup did not return JSON: ${result.stderr}`);
+          }
+          if (result.status === 0) {
+            if (value !== process.env.PACKAGE_INTEGRITY) throw new Error('Version already exists with different registry integrity. Refusing publication.');
+            console.log('Version already exists with identical integrity; skipping publication.');
+            appendFileSync(process.env.GITHUB_OUTPUT, 'exists=true\n');
+          } else if (result.status !== null && value?.error?.code === 'E404') {
+            console.log('Registry returned E404: version is absent.');
+            appendFileSync(process.env.GITHUB_OUTPUT, 'exists=false\n');
+          } else {
+            throw new Error(`Registry lookup failed; absence is not established: ${result.stderr}`);
+          }
+          NODE
+      # Temporary first-publish bootstrap: delete this entire step (including its
+      # sole secret env reference) after revocation. The OIDC step is independent.
+      - name: Temporary token bootstrap (first publication only)
+        if: steps.registry.outputs.exists == 'false'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
+        run: |
+          if [ -n "$NODE_AUTH_TOKEN" ]; then
+            npm publish "$TARBALL" --provenance --access public
+            echo 'PACKAGE_PUBLISHED=true' >> "$GITHUB_ENV"
+          fi
+      - name: Publish with trusted publishing (OIDC)
+        if: steps.registry.outputs.exists == 'false' && env.PACKAGE_PUBLISHED != 'true'
+        run: npm publish "$TARBALL" --provenance --access public
+
+  release:
+    name: Create draft release from changelog
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-candidate
+          path: release-artifact
+      - name: Create draft unless the release already exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          # List drafts too; lookup failures must not be mistaken for absence.
+          gh api --paginate "repos/$GH_REPO/releases" --jq '.[].tag_name' > release-tags.txt
+          if grep -Fxq -- "$RELEASE_TAG" release-tags.txt; then
+            echo 'Release already exists; leaving its content and publication state unchanged.'
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --notes-file release-artifact/notes.md
+          fi

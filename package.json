@@ -1,0 +1,85 @@
+{
+  "name": "jev-tools",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "description": "Six evidence-oriented tools for pi and omp coding agents, compatible with the Jev API format.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NomenAK/jev-tools.git"
+  },
+  "homepage": "https://github.com/NomenAK/jev-tools#readme",
+  "bugs": {
+    "url": "https://github.com/NomenAK/jev-tools/issues"
+  },
+  "keywords": [
+    "typescript",
+    "coding-agents",
+    "code-review",
+    "test-selection",
+    "pi",
+    "omp",
+    "jev"
+  ],
+  "files": [
+    "src/",
+    "rules/",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "docs/design.md",
+    "docs/tools/jev_ask.md",
+    "docs/tools/jev_ask_files.md",
+    "docs/tools/jev_find_files.md",
+    "docs/tools/jev_locate_in_file.md",
+    "docs/tools/jev_check_diff.md",
+    "docs/tools/jev_select_tests.md"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "omp": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "check:imports": "node scripts/check-imports.ts",
+    "lint": "biome check src test scripts",
+    "test": "node --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.87.1"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.0.0",
+    "@earendil-works/pi-coding-agent": "0.87.1",
+    "@types/node": "^24.0.0",
+    "jest": "30.5.2",
+    "typescript": "^5.9.0",
+    "vitest": "~3.2.7"
+  },
+  "optionalDependencies": {
+    "@ast-grep/lang-python": "^0.0.6",
+    "@ast-grep/napi": "^0.45.3",
+    "@ff-labs/fff-node": "^0.11.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}
