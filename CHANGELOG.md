@@ -9,7 +9,10 @@ modules are not a stable library API.
 
 ## [Unreleased]
 
-## [0.1.0]
+## [0.1.1] - 2026-10-02
+
+First release published to npm. Version 0.1.0 was tagged but never published:
+its publish workflow failed before upload.
 
 ### Added
 
@@ -29,8 +32,8 @@ modules are not a stable library API.
 ### Compatibility
 
 Requires Node.js 24 or later. Supported host baseline: pi 0.87.1 or later, or
-omp 18.4.10 or later. Install with `pi install npm:jev-tools@0.1.0` or
-`omp plugin install jev-tools@0.1.0`. Omp uses its Bun runtime; Node.js is also
+omp 18.4.10 or later. Install with `pi install npm:jev-tools@0.1.1` or
+`omp plugin install jev-tools@0.1.1`. Omp uses its Bun runtime; Node.js is also
 required for Node-based project checks. These are support baselines, not the first
 host releases to implement package installation. Later host versions are expected
 to remain compatible but are not all individually validated. Optional native
@@ -38,5 +41,14 @@ dependencies may be unavailable on some platforms; affected tools report their
 limitations. The HTTP client is compatible with the Jev API format; configure your
 own endpoint and credentials.
 
-[Unreleased]: https://github.com/NomenAK/jev-tools/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/NomenAK/jev-tools/releases/tag/v0.1.0
+### Fixed
+
+- The publish workflow passes the approved tarball to npm as a local path.
+
+## [0.1.0]
+
+Tagged but never published to npm. Its contents are released as 0.1.1.
+
+[Unreleased]: https://github.com/NomenAK/jev-tools/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/NomenAK/jev-tools/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/NomenAK/jev-tools/tree/v0.1.0
