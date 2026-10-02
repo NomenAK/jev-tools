@@ -39,6 +39,12 @@ modules are not a stable library API.
   relate to the Git root, which emptied import closures and file references.
 - Line endings are pinned to LF via `.gitattributes`, so lint and the rule/guideline
   parity check pass on Windows checkouts with `core.autocrlf=true`.
+- Windows: saving or loading `/jev-setup` configuration always failed, because the
+  privacy check read POSIX mode bits, which Windows reports as `0o666` for every file.
+  Windows now checks the folder and file access lists (allow entries limited to the
+  current user, SYSTEM and Administrators) and restricts a new folder when saving.
+- Tests: `secret-input` passed a `C:\` path to `import()`; the risk-caller latency
+  test compared one run with a fixed 250 ms and now checks 250- to 1000-line scaling.
 
 ## [0.1.4] - 2026-10-02
 

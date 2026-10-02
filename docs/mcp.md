@@ -26,7 +26,7 @@ The server reads, per field, the environment first and then the configuration sa
 | `JEV_TOOLS_ALLOW_COMMAND` | no | `0` removes `command` from `jev_ask`. |
 | `JEV_TOOLS_BASH` | no | Full path of the bash used for commands on Windows. |
 
-Prefer passing secrets through your client's environment-variable interpolation (shown per client below) rather than writing the key into a committed file. Saved configuration from `/jev-setup` lives in `~/.config/jev-agent-tools/config.json` and is refused unless the directory and file are private; on Windows that check cannot pass, so use environment variables there. Unusable saved storage is reported on the server's stderr and never stops the server.
+Prefer passing secrets through your client's environment-variable interpolation (shown per client below) rather than writing the key into a committed file. Saved configuration from `/jev-setup` lives in `~/.config/jev-agent-tools/config.json` and is refused unless the directory and file are private: owner-only mode bits on Linux and macOS, an access list limited to you, SYSTEM and Administrators on Windows. Unusable saved storage is reported on the server's stderr and never stops the server.
 
 Without an endpoint and key the server still starts, lists the tools and answers each call with what is missing.
 
@@ -216,7 +216,7 @@ Then use `"command": "node"` with `"args": ["/absolute/path/to/jev-tools/dist/mc
 |---|---|
 | Client shows the server failed to start on Windows | `npx` cannot start without a shell. Use `cmd /c npx` or `node <path>/dist/mcp/main.js`. |
 | `jev-tools is not configured` in every result | The server did not receive `JEV_TOOLS_URL` and `JEV_TOOLS_API_KEY`. Check the client's `env` block and that interpolated variables exist where the client was started. |
-| stderr: `Cannot read or save Jev configuration` | Saved `/jev-setup` storage is not private or is malformed. Environment variables still apply; fix permissions or delete the file. |
+| stderr: `Cannot read or save Jev configuration` | Saved `/jev-setup` storage is not private or is malformed. Environment variables still apply. Fix permissions (on Windows, remove other accounts from the folder's Security tab) or delete the file and save again. |
 | `Repository directory not found` | `--root` or `JEV_TOOLS_ROOT` points to a missing directory. |
 | Command evidence reports `Command executable unavailable` | No usable bash. Install Git for Windows or set `JEV_TOOLS_BASH`. |
 | Results from the wrong repository | The client started the server elsewhere. Pass an absolute `--root`. |

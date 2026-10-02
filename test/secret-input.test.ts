@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import test from "node:test";
+import { pathToFileURL } from "node:url";
 import { inspect } from "node:util";
 import type { SecretKeyHelpers } from "../src/secret-input.ts";
 import { MaskedSecretInput } from "../src/secret-input.ts";
@@ -11,7 +12,10 @@ const hostRequire = createRequire(
   import.meta.resolve("@earendil-works/pi-coding-agent"),
 );
 // Development host keys are loaded dynamically because its TUI package is nested.
-const hostKeys = await import(hostRequire.resolve("@earendil-works/pi-tui"));
+// import() needs a file URL; a bare C:\ path is read as a "c:" URL scheme on Windows.
+const hostKeys = await import(
+  pathToFileURL(hostRequire.resolve("@earendil-works/pi-tui")).href
+);
 const keys: SecretKeyHelpers = {
   matchesKey: hostKeys.matchesKey,
   isKeyRelease: hostKeys.isKeyRelease,

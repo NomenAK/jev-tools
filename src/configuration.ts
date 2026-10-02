@@ -3,6 +3,10 @@ import { constants } from "node:fs";
 import { lstat, mkdir, open, rename, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import {
+  type PrivateStorage,
+  privateStorage,
+} from "./adapters/private-storage.ts";
 import { createJevClient } from "./jev/client.ts";
 import type { JevClient } from "./jev/types.ts";
 
@@ -56,11 +60,19 @@ export class ConfigController {
   private saved: SavedConfiguration = {};
   private session: SavedConfiguration = {};
   private readonly directory: string;
+  private readonly storage: PrivateStorage;
   private initialization: Promise<void> | undefined;
   private currentClient: JevClient | undefined;
 
-  constructor(options: { env?: NodeJS.ProcessEnv; directory?: string } = {}) {
+  constructor(
+    options: {
+      env?: NodeJS.ProcessEnv;
+      directory?: string;
+      storage?: PrivateStorage;
+    } = {},
+  ) {
     const env = options.env ?? process.env;
+    this.storage = options.storage ?? privateStorage();
     for (const [field, name] of [
       ["url", "JEV_TOOLS_URL"],
       ["apiKey", "JEV_TOOLS_API_KEY"],
@@ -163,19 +175,14 @@ export class ConfigController {
 
   private async checkDirectory(): Promise<boolean> {
     // Check ancestors too: recursive mkdir and path-based reads must not follow symlinks.
+    // Privacy of the directory itself is checked with its file in readSaved,
+    // using the operating system's own permission model.
     let path = this.directory;
     let exists = true;
     while (true) {
       try {
         const stat = await lstat(path);
         if (!stat.isDirectory() || stat.isSymbolicLink()) throw storageError();
-        if (
-          path === this.directory &&
-          ((stat.mode & 0o077) !== 0 ||
-            (process.getuid && stat.uid !== process.getuid()))
-        ) {
-          throw storageError();
-        }
       } catch (error) {
         if ((error as NodeJS.ErrnoException)?.code !== "ENOENT")
           throw storageError();
@@ -191,12 +198,20 @@ export class ConfigController {
   private async readSaved(): Promise<SavedConfiguration> {
     try {
       if (!(await this.checkDirectory())) return {};
+      const directory = {
+        path: this.directory,
+        stat: await lstat(this.directory),
+      };
       const path = join(this.directory, "config.json");
       try {
         const stat = await lstat(path);
         if (!stat.isFile() || stat.isSymbolicLink()) throw storageError();
       } catch (error) {
-        if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return {};
+        if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+          if (!(await this.storage.isPrivate([directory])))
+            throw storageError();
+          return {};
+        }
         throw error;
       }
       const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
@@ -205,8 +220,7 @@ export class ConfigController {
         if (
           !stat.isFile() ||
           stat.nlink !== 1 ||
-          (stat.mode & 0o077) !== 0 ||
-          (process.getuid && stat.uid !== process.getuid())
+          !(await this.storage.isPrivate([directory, { path, stat }]))
         ) {
           throw storageError();
         }
@@ -235,9 +249,22 @@ export class ConfigController {
   private async save(values: SavedConfiguration): Promise<void> {
     let temporary: string | undefined;
     try {
-      if (!(await this.checkDirectory())) {
+      const existed = await this.checkDirectory();
+      if (!existed) {
         await mkdir(this.directory, { recursive: true, mode: 0o700 });
       }
+      // Windows ignores mkdir's mode, so restrict the ACL before any secret is
+      // written: always for a new directory, and for an existing one only while
+      // it holds no configuration (e.g. left behind by an earlier failed save).
+      // Existing configuration is never re-permissioned; readSaved refuses it.
+      if (
+        !existed ||
+        !(await lstat(join(this.directory, "config.json")).then(
+          () => true,
+          () => false,
+        ))
+      )
+        await this.storage.restrictDirectory(this.directory);
       // Refuse to replace malformed, insecure or newly introduced storage.
       await this.readSaved();
       temporary = join(this.directory, `.config-${randomUUID()}.tmp`);

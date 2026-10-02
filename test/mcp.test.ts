@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { windowsStorage } from "../src/adapters/private-storage.ts";
 import type { JevClient } from "../src/jev/types.ts";
 import {
   INVALID_PARAMS,
@@ -232,6 +233,9 @@ test("MCP uses configuration saved by /jev-setup and survives unusable storage",
   const directory = await mkdtemp(join(tmpdir(), "jev-mcp-config-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   await chmod(directory, 0o700);
+  // mkdtemp's mode is ignored on Windows; restrict the ACL like a real save.
+  if (process.platform === "win32")
+    await windowsStorage.restrictDirectory(directory);
   const file = join(directory, "config.json");
   await writeFile(
     file,
@@ -240,15 +244,8 @@ test("MCP uses configuration saved by /jev-setup and survives unusable storage",
   );
   await chmod(file, 0o600);
   const saved = await loadMcpClient({}, directory);
-  if (process.platform === "win32") {
-    // Windows reports mode 666 for every file, so private storage cannot be
-    // verified and is refused; the reason is surfaced, not swallowed.
-    assert.equal(saved.client, undefined);
-    assert.match(saved.warning ?? "", /Cannot read or save Jev configuration/);
-  } else {
-    assert.ok(saved.client);
-    assert.equal(saved.warning, undefined);
-  }
+  assert.ok(saved.client);
+  assert.equal(saved.warning, undefined);
   // Environment variables still apply when saved storage is unusable.
   await writeFile(file, "not json", { mode: 0o600 });
   const fromEnv = await loadMcpClient(
