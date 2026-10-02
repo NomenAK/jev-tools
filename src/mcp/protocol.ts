@@ -205,7 +205,7 @@ export class McpServer {
   private async callTool(
     id: Id,
     params: Record<string, unknown>,
-  ): Promise<JsonRpcResponse> {
+  ): Promise<JsonRpcResponse | undefined> {
     const tool =
       typeof params.name === "string" ? this.tools.get(params.name) : undefined;
     if (!tool)
@@ -222,10 +222,17 @@ export class McpServer {
       );
     const controller = new AbortController();
     this.inFlight.set(id, controller);
+    // A cancelled request gets no response on any path: 2025-11-25 says
+    // receivers SHOULD NOT respond, and the 2026-07-28 stdio transport says
+    // servers MUST NOT send further messages for it. The signal stays aborted
+    // after the notification removes the entry, so the check is race-free.
+    const cancelled = () => controller.signal.aborted;
     try {
       const result = await tool.call(params.arguments ?? {}, controller.signal);
+      if (cancelled()) return undefined;
       return this.result(id, { ...result });
     } catch (error) {
+      if (cancelled()) return undefined;
       // Tool execution failures are results the model can read, not protocol errors.
       return this.result(id, {
         content: [

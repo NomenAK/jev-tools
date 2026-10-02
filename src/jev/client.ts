@@ -268,7 +268,9 @@ export function createJevClient(
               missing(ids, stopped);
               return;
             }
-            await options.awaitAdmission?.();
+            // The reservation is held from here on; `finally` releases it on
+            // every exit path (stopped, refused, failed, aborted, answered).
+            settle = await options.awaitAdmission?.(options.signal);
             if (stopped) {
               missing(ids, stopped);
               return;
@@ -282,7 +284,6 @@ export function createJevClient(
               missing(ids, stopped);
               return;
             }
-            settle = options.afterRequest;
             const timeout = new AbortController();
             void clock.sleep(timeoutMs, timeoutCancellation.signal).then(
               () => timeout.abort(new Error("Jev request timeout")),

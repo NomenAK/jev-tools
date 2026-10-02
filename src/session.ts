@@ -54,8 +54,10 @@ export class Session {
     cacheHits: 0,
   };
   private readonly limits: SessionLimits;
-  private inFlight = 0;
-  private waiters: (() => void)[] = [];
+  // USD gate: at most one admitted request in flight under a USD limit.
+  private gateHeld = false;
+  private gateEpoch = 0;
+  private gateWaiters = new Set<() => void>();
   constructor(limits: SessionLimits) {
     this.limits = limits;
   }
@@ -76,27 +78,57 @@ export class Session {
     }
     this.counters.calls++;
     this.counters.questions += questions;
-    this.inFlight++;
     return { ok: true };
   }
   /**
    * Under a USD limit, admit one request at a time so each admission sees the
-   * cost reported by every earlier request. Without the gate, concurrent
-   * batches are all admitted before any cost arrives and overshoot the limit.
-   * At most the final admitted request can exceed the limit, as documented.
+   * cost reported by every earlier request; without it, concurrent batches are
+   * all admitted before any cost arrives and overshoot the limit. Only the
+   * final admitted request can then exceed the limit, as documented.
+   *
+   * `awaitAdmission` reserves the gate atomically: the availability check and
+   * `gateHeld = true` run with no await between them, so two callers cannot
+   * both pass. It resolves to a release function that the client calls on
+   * every exit path (response, refusal, failure, abort); release is
+   * idempotent and ignores a gate that `reset()` already replaced.
    */
-  requestGate(): Pick<JudgmentOptions, "awaitAdmission" | "afterRequest"> {
+  requestGate(): Pick<JudgmentOptions, "awaitAdmission"> {
     return {
-      awaitAdmission: async () => {
-        while (this.limits.maxUsd !== undefined && this.inFlight > 0)
-          await new Promise<void>((resolve) => this.waiters.push(resolve));
-      },
-      afterRequest: () => {
-        if (this.inFlight > 0) this.inFlight--;
-        // Wake every waiter; each rechecks synchronously and only one admits.
-        for (const resolve of this.waiters.splice(0)) resolve();
+      awaitAdmission: async (signal) => {
+        if (this.limits.maxUsd === undefined) return undefined;
+        while (this.gateHeld) {
+          signal?.throwIfAborted();
+          await new Promise<void>((resolve, reject) => {
+            const onAbort = () => {
+              this.gateWaiters.delete(wake);
+              reject(signal?.reason);
+            };
+            const wake = () => {
+              signal?.removeEventListener("abort", onAbort);
+              resolve();
+            };
+            this.gateWaiters.add(wake);
+            signal?.addEventListener("abort", onAbort, { once: true });
+          });
+        }
+        signal?.throwIfAborted();
+        this.gateHeld = true;
+        const epoch = this.gateEpoch;
+        let released = false;
+        return () => {
+          if (released || epoch !== this.gateEpoch) return;
+          released = true;
+          this.gateHeld = false;
+          this.wakeGateWaiters();
+        };
       },
     };
+  }
+  // Every waiter rechecks; the first to run reserves, the rest wait again.
+  private wakeGateWaiters(): void {
+    const waiters = [...this.gateWaiters];
+    this.gateWaiters.clear();
+    for (const wake of waiters) wake();
   }
   recordUsage(usage: { costUsd: number }): void {
     this.counters.costUsd += usage.costUsd;
@@ -116,8 +148,10 @@ export class Session {
     return { ...this.counters };
   }
   reset(): void {
-    this.inFlight = 0;
-    for (const resolve of this.waiters.splice(0)) resolve();
+    // A new session generation: outstanding release functions become no-ops.
+    this.gateEpoch++;
+    this.gateHeld = false;
+    this.wakeGateWaiters();
     this.counters = {
       calls: 0,
       questions: 0,

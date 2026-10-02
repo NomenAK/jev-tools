@@ -64,6 +64,8 @@ export async function captureCommand(
     };
     try {
       const shell = resolveShell();
+      // Fail closed: never spawn a bare name that PATH could resolve to WSL.
+      if (!shell.ok) throw new Error(shell.error);
       executed = await exec(
         shell.executable,
         [

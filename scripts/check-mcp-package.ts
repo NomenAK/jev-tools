@@ -67,6 +67,141 @@ export function metadataProblems(
   return problems;
 }
 
+export interface ServerCheckOptions {
+  /** Per-request reply timeout. */
+  timeoutMs?: number;
+  /** How long the server may take to exit once stdin is closed. */
+  exitTimeoutMs?: number;
+  env?: NodeJS.ProcessEnv;
+}
+
+/**
+ * Start an MCP server over stdio, check `initialize` and that `tools/list`
+ * returns exactly the six tools, then close stdin and require a clean exit.
+ *
+ * Every path, success or failure, ends with the same cleanup: timers
+ * cleared, the line reader and pipes closed, and the child terminated and
+ * reaped. Without that, a failed check left the child and its pipes open,
+ * which kept Node alive and hung the CI/release gate instead of failing it.
+ */
+export async function checkServer(
+  command: string,
+  args: readonly string[],
+  options: ServerCheckOptions = {},
+): Promise<void> {
+  const timeoutMs = options.timeoutMs ?? 20_000;
+  const exitTimeoutMs = options.exitTimeoutMs ?? 10_000;
+  const child = spawn(command, args, {
+    stdio: ["pipe", "pipe", "pipe"],
+    env: options.env ?? {
+      ...process.env,
+      JEV_TOOLS_URL: "",
+      JEV_TOOLS_API_KEY: "",
+    },
+    windowsHide: true,
+  });
+  let stderr = "";
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk: string) => {
+    stderr = (stderr + chunk).slice(-2_000);
+  });
+  // Ignore EPIPE if the server dies while a request is being written.
+  child.stdin.on("error", () => {});
+  const exited = new Promise<number | null>((done) => {
+    child.on("exit", (code, signal) => done(signal ? null : code));
+  });
+  const spawnFailed = new Promise<never>((_done, fail) => {
+    child.on("error", (error) => fail(error));
+  });
+  const timers = new Set<NodeJS.Timeout>();
+  const replies = new Map<number, (value: Record<string, unknown>) => void>();
+  const lines = createInterface({ input: child.stdout });
+  lines.on("line", (line) => {
+    let message: { id?: number };
+    try {
+      message = JSON.parse(line) as { id?: number };
+    } catch {
+      return; // Not ours to judge here; the awaited reply will time out.
+    }
+    if (typeof message.id === "number")
+      replies.get(message.id)?.(message as Record<string, unknown>);
+  });
+  const call = (id: number, method: string, params: unknown) =>
+    Promise.race([
+      spawnFailed,
+      new Promise<Record<string, unknown>>((done, fail) => {
+        const timer = setTimeout(() => {
+          timers.delete(timer);
+          fail(new Error(`${method} timed out after ${timeoutMs} ms`));
+        }, timeoutMs);
+        timers.add(timer);
+        replies.set(id, (value) => {
+          clearTimeout(timer);
+          timers.delete(timer);
+          replies.delete(id);
+          done(value);
+        });
+        child.stdin.write(
+          `${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`,
+        );
+      }),
+    ]);
+  try {
+    const init = (await call(1, "initialize", {
+      protocolVersion: "2025-11-25",
+      capabilities: {},
+      clientInfo: { name: "release-check", version: "1" },
+    })) as { result?: { protocolVersion?: string } };
+    if (init.result?.protocolVersion !== "2025-11-25")
+      throw new Error(`initialize failed: ${JSON.stringify(init)}`);
+    const listed = (await call(2, "tools/list", {})) as {
+      result?: { tools?: { name: string }[] };
+    };
+    const names = listed.result?.tools?.map((tool) => tool.name) ?? [];
+    if (JSON.stringify(names) !== JSON.stringify(TOOLS))
+      throw new Error(`tools/list returned [${names.join(", ")}]`);
+    // Graceful shutdown: the server must exit cleanly when stdin closes.
+    child.stdin.end();
+    let timer: NodeJS.Timeout | undefined;
+    const code = await Promise.race([
+      exited,
+      new Promise<never>((_done, fail) => {
+        timer = setTimeout(
+          () =>
+            fail(
+              new Error(
+                `server did not exit within ${exitTimeoutMs} ms of stdin closing`,
+              ),
+            ),
+          exitTimeoutMs,
+        );
+      }),
+    ]).finally(() => clearTimeout(timer));
+    if (code !== 0) throw new Error(`server exited with ${code}`);
+  } catch (error) {
+    const detail = stderr.trim() ? `\nserver stderr: ${stderr.trim()}` : "";
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}${detail}`,
+    );
+  } finally {
+    for (const timer of timers) clearTimeout(timer);
+    timers.clear();
+    replies.clear();
+    lines.close();
+    child.stdin.destroy();
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+      // Reap it, but never wait forever on a process that will not die.
+      await Promise.race([
+        exited,
+        new Promise((done) => setTimeout(done, 2_000).unref()),
+      ]);
+    }
+    child.stdout.destroy();
+    child.stderr.destroy();
+  }
+}
+
 async function smoke(tarball: string): Promise<void> {
   const directory = mkdtempSync(join(tmpdir(), "jev-mcp-package-"));
   try {
@@ -80,12 +215,15 @@ async function smoke(tarball: string): Promise<void> {
       "--omit=optional",
       tarball,
     ];
+    // Bounded, so a stalled install fails the gate instead of hanging it.
+    const installOptions = {
+      cwd: directory,
+      stdio: "ignore" as const,
+      timeout: 300_000,
+    };
     if (process.platform === "win32")
-      execFileSync("cmd", ["/c", "npm", ...install], {
-        cwd: directory,
-        stdio: "ignore",
-      });
-    else execFileSync("npm", install, { cwd: directory, stdio: "ignore" });
+      execFileSync("cmd", ["/c", "npm", ...install], installOptions);
+    else execFileSync("npm", install, installOptions);
     const main = join(
       directory,
       "node_modules",
@@ -94,47 +232,7 @@ async function smoke(tarball: string): Promise<void> {
       "mcp",
       "main.js",
     );
-    const child = spawn(process.execPath, [main, "--root", directory], {
-      stdio: ["pipe", "pipe", "inherit"],
-      env: { ...process.env, JEV_TOOLS_URL: "", JEV_TOOLS_API_KEY: "" },
-    });
-    const replies = new Map<number, (value: Record<string, unknown>) => void>();
-    createInterface({ input: child.stdout }).on("line", (line) => {
-      const message = JSON.parse(line) as { id: number };
-      replies.get(message.id)?.(message as Record<string, unknown>);
-    });
-    const call = (id: number, method: string, params: unknown) =>
-      new Promise<Record<string, unknown>>((done, fail) => {
-        const timer = setTimeout(
-          () => fail(new Error(`${method} timed out`)),
-          20_000,
-        );
-        replies.set(id, (value) => {
-          clearTimeout(timer);
-          done(value);
-        });
-        child.stdin.write(
-          `${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`,
-        );
-      });
-    const init = (await call(1, "initialize", {
-      protocolVersion: "2025-11-25",
-      capabilities: {},
-      clientInfo: { name: "release-check", version: "1" },
-    })) as { result?: { protocolVersion?: string } };
-    if (init.result?.protocolVersion !== "2025-11-25")
-      throw new Error(`initialize failed: ${JSON.stringify(init)}`);
-    const listed = (await call(2, "tools/list", {})) as {
-      result?: { tools?: { name: string }[] };
-    };
-    const names = listed.result?.tools?.map((tool) => tool.name) ?? [];
-    if (JSON.stringify(names) !== JSON.stringify(TOOLS))
-      throw new Error(`tools/list returned ${names.join(", ")}`);
-    child.stdin.end();
-    const code = await new Promise<number | null>((done) =>
-      child.on("exit", done),
-    );
-    if (code !== 0) throw new Error(`server exited with ${code}`);
+    await checkServer(process.execPath, [main, "--root", directory]);
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

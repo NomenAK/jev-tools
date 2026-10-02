@@ -1,5 +1,7 @@
 import { accessSync, constants } from "node:fs";
-import { delimiter, dirname, join } from "node:path";
+// Candidates are Windows paths whatever the host OS, so the helpers use win32
+// semantics explicitly; the host-native `node:path` splits PATH on ":" on POSIX.
+import { win32 } from "node:path";
 
 export interface ShellInvocation {
   executable: string;
@@ -8,6 +10,10 @@ export interface ShellInvocation {
   /** Exports prepended to the script when the launcher cannot set them. */
   scriptPrefix: string;
 }
+
+export type ShellResolution =
+  | ({ ok: true } & ShellInvocation)
+  | { ok: false; error: string };
 
 function executable(path: string): boolean {
   try {
@@ -19,64 +25,73 @@ function executable(path: string): boolean {
 }
 
 /**
- * Windows ships `bash.exe` launchers for WSL in System32 and WindowsApps.
- * They run in a Linux VM that cannot see Windows temporary paths, so they are
- * never used for command evidence.
+ * Windows ships `bash.exe` launchers for WSL in System32 (and SysWOW64,
+ * Sysnative) and in WindowsApps. They run in a Linux VM that cannot see Windows
+ * temporary paths, so they are never used for command evidence, including
+ * when named explicitly in JEV_TOOLS_BASH.
  */
-function isWslLauncher(path: string): boolean {
-  const lower = path.toLowerCase();
+export function isWslLauncher(path: string): boolean {
+  const lower = win32.normalize(path).toLowerCase();
   return (
-    lower.includes("\\windows\\system32\\") ||
+    /\\windows\\(system32|syswow64|sysnative)\\/.test(lower) ||
     lower.includes("\\microsoft\\windowsapps\\")
   );
 }
 
-/** Git for Windows bash candidates, most specific first. */
+/** Permitted Git for Windows bash candidates, most specific first. */
 export function windowsBashCandidates(env: NodeJS.ProcessEnv): string[] {
   const candidates: string[] = [];
   if (env.JEV_TOOLS_BASH?.trim()) candidates.push(env.JEV_TOOLS_BASH.trim());
   const pathEntries = (env.PATH ?? env.Path ?? "")
-    .split(delimiter)
+    .split(win32.delimiter)
     .filter(Boolean);
   for (const entry of pathEntries) {
-    const bash = join(entry, "bash.exe");
-    if (!isWslLauncher(bash)) candidates.push(bash);
+    candidates.push(win32.join(entry, "bash.exe"));
     // Git\cmd\git.exe or Git\bin\git.exe on PATH implies Git\bin\bash.exe.
     if (/[\\/](cmd|bin)$/i.test(entry))
-      candidates.push(join(dirname(entry), "bin", "bash.exe"));
+      candidates.push(win32.join(win32.dirname(entry), "bin", "bash.exe"));
   }
   for (const root of [
     env.ProgramFiles,
     env["ProgramFiles(x86)"],
-    env.LOCALAPPDATA && join(env.LOCALAPPDATA, "Programs"),
+    env.LOCALAPPDATA && win32.join(env.LOCALAPPDATA, "Programs"),
   ])
-    if (root) candidates.push(join(root, "Git", "bin", "bash.exe"));
-  return [...new Set(candidates)];
+    if (root) candidates.push(win32.join(root, "Git", "bin", "bash.exe"));
+  // Filter every source, so no candidate can reintroduce a WSL launcher.
+  return [...new Set(candidates)].filter(
+    (candidate) => win32.isAbsolute(candidate) && !isWslLauncher(candidate),
+  );
 }
 
-let cached: ShellInvocation | undefined;
+const UNAVAILABLE =
+  "No permitted bash found: install Git for Windows or set JEV_TOOLS_BASH to the full path of a bash that is not the WSL launcher.";
+let cached: ShellResolution | undefined;
 
 /**
  * POSIX hosts keep `env CI=1 bash -c`. Windows has no `env` and its default
  * `bash` is the WSL launcher, so resolve Git for Windows bash (or
- * JEV_TOOLS_BASH) and export CI inside the script instead.
+ * JEV_TOOLS_BASH) to an absolute, permitted path and export CI inside the
+ * script. When none is found this fails closed: no bare name is returned,
+ * because spawning one would search PATH again without the WSL exclusion.
  */
 export function resolveShell(
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,
   isExecutable: (path: string) => boolean = executable,
-): ShellInvocation {
+): ShellResolution {
   if (platform !== "win32")
-    return { executable: "env", prefix: ["CI=1", "bash"], scriptPrefix: "" };
+    return {
+      ok: true,
+      executable: "env",
+      prefix: ["CI=1", "bash"],
+      scriptPrefix: "",
+    };
   const useCache = isExecutable === executable && env === process.env;
   if (useCache && cached) return cached;
   const found = windowsBashCandidates(env).find((path) => isExecutable(path));
-  const resolved: ShellInvocation = {
-    // An unresolved name fails at spawn and is reported as unavailable evidence.
-    executable: found ?? "bash.exe",
-    prefix: [],
-    scriptPrefix: "export CI=1; ",
-  };
+  const resolved: ShellResolution = found
+    ? { ok: true, executable: found, prefix: [], scriptPrefix: "export CI=1; " }
+    : { ok: false, error: UNAVAILABLE };
   if (useCache && found) cached = resolved;
   return resolved;
 }

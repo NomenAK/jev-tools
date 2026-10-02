@@ -198,35 +198,73 @@ test("schema violations are tool errors; unknown tools and methods are protocol 
   );
 });
 
-test("notifications/cancelled aborts the running tool call", async () => {
-  let aborted = false;
-  const reached = Promise.withResolvers<void>();
-  const blocking: JevClient = {
-    clearCache() {},
-    judge: (_state, _questions, options) =>
-      new Promise((resolve) => {
-        const stop = () => {
-          aborted = true;
-          resolve({ ok: false, error: "aborted" });
-        };
-        if (options?.signal?.aborted) stop();
-        else options?.signal?.addEventListener("abort", stop);
-        reached.resolve();
+// Spec: 2025-11-25 receivers SHOULD NOT respond to a cancelled request;
+// the 2026-07-28 stdio transport says servers MUST NOT send further messages.
+for (const [label, meta, fails] of [
+  ["initialize-era", undefined, false],
+  ["2026-07-28 per-request version", "2026-07-28", false],
+  ["tool that throws after cancellation", "2026-07-28", true],
+] as const)
+  test(`notifications/cancelled aborts the call and suppresses its response: ${label}`, async () => {
+    let aborted = false;
+    const reached = Promise.withResolvers<void>();
+    const blocking: JevClient = {
+      clearCache() {},
+      judge: (_state, _questions, options) =>
+        new Promise((resolve, reject) => {
+          const stop = () => {
+            aborted = true;
+            if (fails) reject(new Error("aborted"));
+            else resolve({ ok: false, error: "aborted" });
+          };
+          if (options?.signal?.aborted) stop();
+          else options?.signal?.addEventListener("abort", stop);
+          reached.resolve();
+        }),
+    };
+    const mcp = await server(blocking);
+    const running = mcp.handle(
+      request(7, "tools/call", {
+        name: "jev_ask",
+        arguments: ask,
+        ...(meta
+          ? { _meta: { "io.modelcontextprotocol/protocolVersion": meta } }
+          : {}),
       }),
-  };
-  const mcp = await server(blocking);
-  const running = mcp.handle(
-    request(7, "tools/call", { name: "jev_ask", arguments: ask }),
-  );
-  await reached.promise;
-  await mcp.handle({
-    jsonrpc: "2.0",
-    method: "notifications/cancelled",
-    params: { requestId: 7 },
+    );
+    await reached.promise;
+    await mcp.handle({
+      jsonrpc: "2.0",
+      method: "notifications/cancelled",
+      params: { requestId: 7, reason: "user" },
+    });
+    assert.equal(await running, undefined);
+    assert.equal(aborted, true);
+    // The server keeps answering other requests afterwards.
+    const listed = await mcp.handle(request(8, "tools/list"));
+    assert.ok(listed && "result" in listed);
   });
-  const response = await running;
-  assert.equal(aborted, true);
-  assert.ok(response && "result" in response);
+
+test("cancelling an unknown or finished request changes nothing", async () => {
+  const mcp = await server(yesClient);
+  const done = await mcp.handle(
+    request(9, "tools/call", { name: "jev_ask", arguments: ask }),
+  );
+  assert.ok(done && "result" in done);
+  for (const requestId of [9, 404, "nope"])
+    assert.equal(
+      await mcp.handle({
+        jsonrpc: "2.0",
+        method: "notifications/cancelled",
+        params: { requestId },
+      }),
+      undefined,
+    );
+  const again = await mcp.handle(
+    request(10, "tools/call", { name: "jev_ask", arguments: ask }),
+  );
+  assert.ok(again && "result" in again);
+  assert.equal(again.result.isError, undefined);
 });
 
 test("MCP uses configuration saved by /jev-setup and survives unusable storage", async (t) => {
@@ -294,11 +332,12 @@ async function fakeJev(): Promise<{
   assert.ok(address && typeof address === "object");
   return { url: `http://127.0.0.1:${address.port}/judge`, server: http, seen };
 }
-function client(child: ChildProcess) {
+function client(child: ChildProcess, seenIds: unknown[] = []) {
   const responses = new Map<number, (value: Record<string, unknown>) => void>();
   assert.ok(child.stdout && child.stdin);
   createInterface({ input: child.stdout }).on("line", (line) => {
     const message = JSON.parse(line) as { id: number };
+    seenIds.push(message.id);
     responses.get(message.id)?.(message);
   });
   let next = 0;
@@ -309,6 +348,51 @@ function client(child: ChildProcess) {
       child.stdin?.write(`${JSON.stringify(request(id, method, params))}\n`);
     });
 }
+
+test("stdio server sends nothing for a cancelled 2026-07-28 request", async (t) => {
+  // A Jev endpoint that never answers keeps the call in flight.
+  let received = Promise.withResolvers<void>();
+  const hanging = createServer((req) => {
+    req.resume();
+    received.resolve();
+  });
+  await new Promise<void>((resolve) => hanging.listen(0, "127.0.0.1", resolve));
+  const address = hanging.address();
+  assert.ok(address && typeof address === "object");
+  const root = await mkdtemp(join(tmpdir(), "jev-mcp-cancel-"));
+  t.after(async () => {
+    hanging.closeAllConnections();
+    hanging.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  const main = fileURLToPath(new URL("../src/mcp/main.ts", import.meta.url));
+  const child = spawn(process.execPath, [main, "--root", root], {
+    env: {
+      ...process.env,
+      JEV_TOOLS_URL: `http://127.0.0.1:${address.port}/judge`,
+      JEV_TOOLS_API_KEY: "cancel-secret",
+      XDG_CONFIG_HOME: isolatedConfig,
+    },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  t.after(() => child.kill());
+  const seenIds: unknown[] = [];
+  const call = client(child, seenIds);
+  await call("initialize", { protocolVersion: "2025-11-25", capabilities: {} });
+  const meta = { "io.modelcontextprotocol/protocolVersion": "2026-07-28" };
+  // id 2: never awaited, because it must never be answered.
+  void call("tools/call", { name: "jev_ask", arguments: ask, _meta: meta });
+  await received.promise;
+  child.stdin?.write(
+    `${JSON.stringify({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: 2 } })}\n`,
+  );
+  // Later requests are still answered; give a stray response time to appear.
+  await call("tools/list", { _meta: meta });
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await call("ping", { _meta: meta });
+  assert.deepEqual(seenIds, [1, 3, 4]);
+  received = Promise.withResolvers<void>();
+});
 
 test("stdio server answers a real jev_ask over a repository file", async (t) => {
   const jev = await fakeJev();
