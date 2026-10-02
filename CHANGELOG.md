@@ -9,6 +9,13 @@ modules are not a stable library API.
 
 ## [Unreleased]
 
+### Fixed
+
+- In omp, first-launch Jev setup no longer waits for credential entry inside the
+  bounded `session_start` handler. The offer and input dialogs stay open while
+  users find their endpoint and key, rather than closing after the host's
+  30-second event deadline.
+
 ## [0.1.4] - 2026-10-02
 
 ### Added
