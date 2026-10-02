@@ -9,10 +9,11 @@ modules are not a stable library API.
 
 ## [Unreleased]
 
-## [0.1.1] - 2026-10-02
+## [0.1.2] - 2026-10-02
 
-First release published to npm, as `@nomenak/jev-tools`. Version 0.1.0 was tagged
-but never published: its publish workflow failed before upload.
+First release published to npm, as `@nomenak/jev-tools`. Versions 0.1.0 and 0.1.1
+were tagged but never published: npm rejected the unscoped name `jev-tools`, and
+the first publish workflow failed before upload.
 
 ### Added
 
@@ -32,8 +33,8 @@ but never published: its publish workflow failed before upload.
 ### Compatibility
 
 Requires Node.js 24 or later. Supported host baseline: pi 0.87.1 or later, or
-omp 18.4.10 or later. Install with `pi install npm:@nomenak/jev-tools@0.1.1` or
-`omp plugin install @nomenak/jev-tools@0.1.1`. Omp uses its Bun runtime; Node.js is also
+omp 18.4.10 or later. Install with `pi install npm:@nomenak/jev-tools@0.1.2` or
+`omp plugin install @nomenak/jev-tools@0.1.2`. Omp uses its Bun runtime; Node.js is also
 required for Node-based project checks. These are support baselines, not the first
 host releases to implement package installation. Later host versions are expected
 to remain compatible but are not all individually validated. Optional native
@@ -44,11 +45,17 @@ own endpoint and credentials.
 ### Fixed
 
 - The publish workflow passes the approved tarball to npm as a local path.
+- In pi, the `jev_ask` policy appears once in the system prompt instead of twice.
+
+## [0.1.1]
+
+Tagged but never published to npm: the unscoped package name was rejected.
 
 ## [0.1.0]
 
-Tagged but never published to npm. Its contents are released as 0.1.1.
+Tagged but never published to npm: the publish workflow failed before upload.
 
-[Unreleased]: https://github.com/NomenAK/jev-tools/compare/v0.1.1...HEAD
-[0.1.1]: https://github.com/NomenAK/jev-tools/compare/v0.1.0...v0.1.1
+[Unreleased]: https://github.com/NomenAK/jev-tools/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/NomenAK/jev-tools/compare/v0.1.0...v0.1.2
+[0.1.1]: https://github.com/NomenAK/jev-tools/tree/v0.1.1
 [0.1.0]: https://github.com/NomenAK/jev-tools/tree/v0.1.0

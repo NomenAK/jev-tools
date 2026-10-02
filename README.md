@@ -9,15 +9,15 @@ Install through your host's package manager. The npm package is `@nomenak/jev-to
 ### pi
 
 ```sh
-pi install npm:@nomenak/jev-tools@0.1.1
+pi install npm:@nomenak/jev-tools@0.1.2
 # Project-local installation:
-pi install -l npm:@nomenak/jev-tools@0.1.1
+pi install -l npm:@nomenak/jev-tools@0.1.2
 ```
 
 ### omp
 
 ```sh
-omp plugin install @nomenak/jev-tools@0.1.1
+omp plugin install @nomenak/jev-tools@0.1.2
 ```
 
 ### Requirements and compatibility
