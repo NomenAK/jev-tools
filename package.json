@@ -1,6 +1,6 @@
 {
   "name": "@nomenak/jev-tools",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "type": "module",
   "license": "MIT",
   "description": "Six evidence-oriented tools for pi and omp coding agents, compatible with the Jev API format.",
