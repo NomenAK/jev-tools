@@ -9,10 +9,14 @@ modules are not a stable library API.
 
 ## [Unreleased]
 
+### Changed
+
+- Release publication uses trusted publishing (OIDC) without a temporary npm token.
+
 ## [0.1.3] - 2026-10-02
 
-Initial npm release candidate, under the name `jev-agent-tools`. Versions 0.1.0,
-0.1.1 and 0.1.2 were tagged but never published; their outcomes are recorded below.
+First npm release, published as `jev-agent-tools`. Versions 0.1.0, 0.1.1 and 0.1.2
+were tagged but never published; their outcomes are recorded below.
 
 ### Added
 

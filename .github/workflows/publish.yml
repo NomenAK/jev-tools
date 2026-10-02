@@ -4,10 +4,8 @@
 # with the same pinned toolchain as this workflow: Node.js 24.15.0 / npm 11.12.1.
 # A rerun skips publication only if the existing version's registry integrity
 # equals the approved tarball; mismatches and inconclusive lookups fail.
-# First publication may use the temporary NPM_BOOTSTRAP_TOKEN environment secret.
-# Once trusted publishing (OIDC) is configured for publish.yml / npm-publish with
-# permission to publish, revoke the token, delete the secret, and remove the
-# marked bootstrap step including its sole secret env reference.
+# Configure the npm trusted publisher for this repository, publish.yml and
+# npm-publish with permission for direct publication. Publishing uses OIDC only.
 # The GitHub Release remains a draft until the published package is verified.
 
 name: Publish
@@ -165,19 +163,8 @@ jobs:
             throw new Error(`Registry lookup failed; absence is not established: ${result.stderr}`);
           }
           NODE
-      # Temporary first-publish bootstrap: delete this entire step (including its
-      # sole secret env reference) after revocation. The OIDC step is independent.
-      - name: Temporary token bootstrap (first publication only)
-        if: steps.registry.outputs.exists == 'false'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
-        run: |
-          if [ -n "$NODE_AUTH_TOKEN" ]; then
-            npm publish "$TARBALL" --provenance --access public
-            echo 'PACKAGE_PUBLISHED=true' >> "$GITHUB_ENV"
-          fi
       - name: Publish with trusted publishing (OIDC)
-        if: steps.registry.outputs.exists == 'false' && env.PACKAGE_PUBLISHED != 'true'
+        if: steps.registry.outputs.exists == 'false'
         run: npm publish "$TARBALL" --provenance --access public
 
   release:
