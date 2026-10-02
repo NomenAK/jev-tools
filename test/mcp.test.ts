@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,7 +14,7 @@ import {
   METHOD_NOT_FOUND,
   UNSUPPORTED_PROTOCOL_VERSION,
 } from "../src/mcp/protocol.ts";
-import { createMcpTools } from "../src/mcp/tools.ts";
+import { createMcpTools, loadMcpClient } from "../src/mcp/tools.ts";
 
 const toolNames = [
   "jev_ask",
@@ -46,10 +46,16 @@ const yesClient: JevClient = {
     };
   },
 };
-function server(client: JevClient | undefined, env: NodeJS.ProcessEnv = {}) {
-  const { tools, instructions } = createMcpTools({
+// Never read the developer's real ~/.config/jev-agent-tools during tests.
+const isolatedConfig = join(tmpdir(), `jev-mcp-no-config-${process.pid}`);
+async function server(
+  client: JevClient | undefined,
+  env: NodeJS.ProcessEnv = {},
+) {
+  const { tools, instructions } = await createMcpTools({
     root: process.cwd(),
     env,
+    configDirectory: isolatedConfig,
     ...(client ? { client } : {}),
   });
   return new McpServer({ name: "t", version: "1", instructions }, tools);
@@ -62,7 +68,7 @@ const request = (id: number, method: string, params?: unknown) => ({
 });
 
 test("initialize echoes a supported version and falls back to the latest", async () => {
-  const mcp = server(undefined);
+  const mcp = await server(undefined);
   const chosen = await mcp.handle(
     request(1, "initialize", { protocolVersion: "2025-06-18" }),
   );
@@ -80,7 +86,7 @@ test("initialize echoes a supported version and falls back to the latest", async
 });
 
 test("server/discover and per-request version metadata follow 2026-07-28", async () => {
-  const mcp = server(undefined);
+  const mcp = await server(undefined);
   const discovered = await mcp.handle(request(1, "server/discover", {}));
   assert.ok(discovered && "result" in discovered);
   assert.ok(
@@ -97,7 +103,9 @@ test("server/discover and per-request version metadata follow 2026-07-28", async
 });
 
 test("tools/list exposes the six tools with JSON object schemas", async () => {
-  const listed = await server(undefined).handle(request(1, "tools/list"));
+  const listed = await (await server(undefined)).handle(
+    request(1, "tools/list"),
+  );
   assert.ok(listed && "result" in listed);
   const tools = listed.result.tools as {
     name: string;
@@ -122,7 +130,9 @@ test("JEV_TOOLS_ALLOW_COMMAND=0 removes command from the MCP schema", async () =
   const previous = process.env.JEV_TOOLS_ALLOW_COMMAND;
   process.env.JEV_TOOLS_ALLOW_COMMAND = "0";
   try {
-    const listed = await server(undefined).handle(request(1, "tools/list"));
+    const listed = await (await server(undefined)).handle(
+      request(1, "tools/list"),
+    );
     assert.ok(listed && "result" in listed);
     const askTool = (
       listed.result.tools as {
@@ -139,7 +149,7 @@ test("JEV_TOOLS_ALLOW_COMMAND=0 removes command from the MCP schema", async () =
 });
 
 test("tools/call runs the shared tool and returns its rendered result", async () => {
-  const called = await server(yesClient).handle(
+  const called = await (await server(yesClient)).handle(
     request(1, "tools/call", { name: "jev_ask", arguments: ask }),
   );
   assert.ok(called && "result" in called);
@@ -149,7 +159,7 @@ test("tools/call runs the shared tool and returns its rendered result", async ()
 });
 
 test("unconfigured server explains the missing configuration", async () => {
-  const called = await server(undefined).handle(
+  const called = await (await server(undefined)).handle(
     request(1, "tools/call", { name: "jev_ask", arguments: ask }),
   );
   assert.ok(called && "result" in called);
@@ -160,7 +170,7 @@ test("unconfigured server explains the missing configuration", async () => {
 });
 
 test("schema violations are tool errors; unknown tools and methods are protocol errors", async () => {
-  const mcp = server(yesClient);
+  const mcp = await server(yesClient);
   const invalid = await mcp.handle(
     request(1, "tools/call", {
       name: "jev_ask",
@@ -203,7 +213,7 @@ test("notifications/cancelled aborts the running tool call", async () => {
         reached.resolve();
       }),
   };
-  const mcp = server(blocking);
+  const mcp = await server(blocking);
   const running = mcp.handle(
     request(7, "tools/call", { name: "jev_ask", arguments: ask }),
   );
@@ -216,6 +226,44 @@ test("notifications/cancelled aborts the running tool call", async () => {
   const response = await running;
   assert.equal(aborted, true);
   assert.ok(response && "result" in response);
+});
+
+test("MCP uses configuration saved by /jev-setup and survives unusable storage", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "jev-mcp-config-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await chmod(directory, 0o700);
+  const file = join(directory, "config.json");
+  await writeFile(
+    file,
+    JSON.stringify({ url: "http://127.0.0.1:9/judge", apiKey: "saved-key" }),
+    { mode: 0o600 },
+  );
+  await chmod(file, 0o600);
+  const saved = await loadMcpClient({}, directory);
+  if (process.platform === "win32") {
+    // Windows reports mode 666 for every file, so private storage cannot be
+    // verified and is refused; the reason is surfaced, not swallowed.
+    assert.equal(saved.client, undefined);
+    assert.match(saved.warning ?? "", /Cannot read or save Jev configuration/);
+  } else {
+    assert.ok(saved.client);
+    assert.equal(saved.warning, undefined);
+  }
+  // Environment variables still apply when saved storage is unusable.
+  await writeFile(file, "not json", { mode: 0o600 });
+  const fromEnv = await loadMcpClient(
+    { JEV_TOOLS_URL: "http://127.0.0.1:9/judge", JEV_TOOLS_API_KEY: "env" },
+    directory,
+  );
+  assert.ok(fromEnv.client);
+  assert.match(fromEnv.warning ?? "", /Cannot read or save Jev configuration/);
+  // An invalid environment URL is reported instead of crashing the server.
+  const invalid = await loadMcpClient(
+    { JEV_TOOLS_URL: "not a url", JEV_TOOLS_API_KEY: "env" },
+    join(directory, "absent"),
+  );
+  assert.equal(invalid.client, undefined);
+  assert.match(invalid.warning ?? "", /full HTTP\(S\) URL/);
 });
 
 // End to end: a real stdio server process talking to a local fake Jev endpoint.
@@ -285,6 +333,8 @@ test("stdio server answers a real jev_ask over a repository file", async (t) => 
       JEV_TOOLS_API_KEY: "e2e-secret",
       JEV_TOOLS_MAX_CALLS: "",
       JEV_TOOLS_MAX_USD: "",
+      // Keep the developer's saved configuration out of the subprocess.
+      XDG_CONFIG_HOME: isolatedConfig,
     },
     stdio: ["pipe", "pipe", "pipe"],
   });

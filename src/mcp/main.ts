@@ -54,13 +54,16 @@ async function main(): Promise<void> {
   );
   if (!statSync(root, { throwIfNoEntry: false })?.isDirectory())
     throw new Error(`Repository directory not found: ${root}`);
-  const { tools, instructions, configured } = createMcpTools({ root });
+  const { tools, instructions, configured, warning } = await createMcpTools({
+    root,
+  });
   const server = new McpServer(
     { name: "jev-agent-tools", version: packageVersion(), instructions },
     tools,
   );
+  if (warning) process.stderr.write(`jev-agent-tools MCP: ${warning}\n`);
   process.stderr.write(
-    `jev-agent-tools MCP server ready (root ${root}; ${configured ? "endpoint configured" : "JEV_TOOLS_URL/JEV_TOOLS_API_KEY not set: tools explain the missing configuration"})\n`,
+    `jev-agent-tools MCP server ready (root ${root}; ${configured ? "endpoint configured" : "no endpoint: set JEV_TOOLS_URL and JEV_TOOLS_API_KEY, or save them with /jev-setup in pi or omp"})\n`,
   );
   const send = (response: JsonRpcResponse | JsonRpcResponse[] | undefined) => {
     if (response === undefined || (Array.isArray(response) && !response.length))

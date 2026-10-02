@@ -36,8 +36,11 @@
     "docs/tools/jev_locate_in_file.md",
     "docs/tools/jev_check_diff.md",
     "docs/tools/jev_select_tests.md",
+    "docs/mcp.md",
+    "docs/agent-instructions.md",
     "dist/",
     "SECURITY.md",
+    "CONTRIBUTING.md",
     "docs/adr/"
   ],
   "bin": {

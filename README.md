@@ -1,10 +1,10 @@
 # jev-agent-tools
 
-Six evidence-oriented tools for pi and omp, compatible with the Jev API format. Use them to navigate unfamiliar code, ask typed questions about repository evidence, review completed changes and select existing tests. They complement reading, searching and execution; they do not replace them.
+Six evidence-oriented tools for pi, omp and any MCP client, compatible with the Jev API format. Use them to navigate unfamiliar code, ask typed questions about repository evidence, review completed changes and select existing tests. They complement reading, searching and execution; they do not replace them.
 
 ## Install
 
-Install through your host's package manager. The npm package is `jev-agent-tools`. It ships TypeScript sources; no separate compilation is required.
+Install through your host's package manager, or register the MCP server with an MCP client. The npm package is `jev-agent-tools`. pi and omp load its TypeScript sources directly; the MCP server ships prebuilt.
 
 ### pi
 
@@ -22,7 +22,7 @@ omp plugin install jev-agent-tools@0.1.4
 
 ### Any MCP client
 
-The package also ships `jev-agent-tools-mcp`, a dependency-free MCP server over stdio that exposes the same six tools to any MCP client (Claude Desktop, Claude Code, Kiro, Cursor and others). It is available from the first release after 0.1.3. Most clients accept an `mcpServers` entry like this; see your client's documentation for where the file lives:
+The package also ships `jev-agent-tools-mcp`, a stdio MCP server that exposes the same six tools to any MCP client: Claude Code, Claude Desktop, Kiro, Cursor, VS Code, Codex CLI and others. It is available from the first release after 0.1.4. A typical `mcpServers` entry:
 
 ```json
 {
@@ -31,21 +31,17 @@ The package also ships `jev-agent-tools-mcp`, a dependency-free MCP server over 
       "command": "npx",
       "args": ["-y", "-p", "jev-agent-tools", "jev-agent-tools-mcp", "--root", "/path/to/repository"],
       "env": {
-        "JEV_TOOLS_URL": "${YOUR_JEV_ENDPOINT}",
-        "JEV_TOOLS_API_KEY": "${YOUR_JEV_API_KEY}"
+        "JEV_TOOLS_URL": "${JEV_TOOLS_URL}",
+        "JEV_TOOLS_API_KEY": "${JEV_TOOLS_API_KEY}"
       }
     }
   }
 }
 ```
 
-The repository the tools work in is `--root`, else `JEV_TOOLS_ROOT`, else the server's working directory. All variables in [Configure](#configure) apply. One server process is one session: limits, cache and counters last as long as the connection. The reading guide and the `jev_ask` policy are sent as the server's `instructions`. Differences from pi and omp:
+On Windows most clients start commands without a shell, so use `"command": "cmd"` with `"/c", "npx"` at the start of `args`. The [MCP setup guide](docs/mcp.md) has per-client files, CLI commands, variable interpolation, verification and troubleshooting. Add the [agent instructions](docs/agent-instructions.md) to `CLAUDE.md`, `AGENTS.md` or a Kiro steering file so the agent uses and reads the tools correctly.
 
-- The automatic run-end documentation check is a host hook and does not run; call `jev_check_diff` with `check: "docs"` instead.
-- MCP clients apply their own approval to tool calls. `jev_ask` is marked as not read-only while commands are enabled; set `JEV_TOOLS_ALLOW_COMMAND=0` to remove `command` from its schema.
-- The server speaks protocol versions 2024-11-05 through 2025-11-25 via `initialize`, and 2026-07-28 via `server/discover`. It offers tools only, not resources or prompts.
-
-From a clone, run `npm run build` and point the client at `node dist/mcp/main.js`. Node does not run the TypeScript sources from inside `node_modules`, which is why the server ships as compiled JavaScript while pi and omp load `src/`.
+The server reads the same environment variables as pi and omp and the configuration saved by `/jev-setup`. One server process is one session. The automatic run-end documentation check does not exist in MCP; call `jev_check_diff` with `check: "docs"` instead. `jev_ask` is marked as not read-only while commands are enabled; set `JEV_TOOLS_ALLOW_COMMAND=0` to remove `command` from its schema.
 
 ### Requirements and compatibility
 
@@ -71,7 +67,7 @@ No dialog appears in print, JSON or RPC modes, or in sub-agents; configure those
 
 **Precedence per field:** environment variable, then launch flag, then this session's setup, then saved configuration, then the default model `openjev`. A field set by the environment or a flag is shown as controlled and is never saved.
 
-**Saved configuration** lives outside the repository at `$XDG_CONFIG_HOME/jev-agent-tools/config.json` (default `~/.config/jev-agent-tools/config.json`), in a private directory (`0700`) with a private file (`0600`). **The key is stored in plaintext, not encrypted.** Storage that is a symlink, group/world-accessible, not owned by you or malformed is refused rather than overwritten.
+**Saved configuration** lives outside the repository at `$XDG_CONFIG_HOME/jev-agent-tools/config.json` (default `~/.config/jev-agent-tools/config.json`), in a private directory (`0700`) with a private file (`0600`). **The key is stored in plaintext, not encrypted.** Storage that is a symlink, group/world-accessible, not owned by you or malformed is refused rather than overwritten. The MCP server also reads this file (after environment variables); on Windows the privacy check cannot pass, so configure MCP there with environment variables.
 
 ### Environment variables
 
@@ -137,15 +133,17 @@ The extension supplies the shared reading guide in both hosts. omp discovers ena
 
 > Before concluding that a failure is a code bug, an incorrect test or an environment problem, or that a plan matches documentation, pass the relevant files to [jev_ask](docs/tools/jev_ask.md) and weigh its answer against your own reading. Include both the failing test and the code it exercises; identify any conclusion that remains unconfirmed.
 
+MCP clients receive the guide as server `instructions`, which some clients ignore. Add the [agent instructions](docs/agent-instructions.md) to the project's `CLAUDE.md`, `AGENTS.md` or Kiro steering file.
+
 ## Data and command safety
 
 Repository evidence, notes and optional command output are sent to your configured endpoint. Review its data-handling policy before using confidential repositories. See [security guidance](SECURITY.md).
 
-File collection is confined to the repository: absolute paths, parent traversal, escaping symlinks, Git metadata and internal URLs are not file inputs. Build output, binaries, lockfiles and oversized files are skipped or refused with visible limits; evidence is not silently truncated into a verdict. This confinement does **not** sandbox a command. `jev_ask` commands can read, write or access the network with the host's shell permissions. omp uses execution approval for commands; pi does not supply an additional per-tool command approval. Set `JEV_TOOLS_ALLOW_COMMAND=0` to disable them.
+File collection is confined to the repository: absolute paths, parent traversal, escaping symlinks, Git metadata and internal URLs are not file inputs. Build output, binaries, lockfiles and oversized files are skipped or refused with visible limits; evidence is not silently truncated into a verdict. This confinement does **not** sandbox a command. `jev_ask` commands can read, write or access the network with the host's shell permissions. omp uses execution approval for commands; pi does not supply an additional per-tool command approval; MCP clients apply their own tool approval, and the server marks `jev_ask` as not read-only. Set `JEV_TOOLS_ALLOW_COMMAND=0` to disable them.
 
 ## Automatic documentation check
 
-On a dirty tree, the extension can check existing Markdown documentation once at run end against changes from `HEAD`, including untracked files. A flagged existing sentence can request one additional turn to update it or explain why it remains correct. Merely unsure sections do not trigger another turn. Missing configuration, disabled automation, invalid/exhausted session budgets or a clean tree skip the check. Errors and timeout do not block the host. This is not a check for every missing documentation obligation.
+On a dirty tree, the extension can check existing Markdown documentation once at run end against changes from `HEAD`, including untracked files. A flagged existing sentence can request one additional turn to update it or explain why it remains correct. Merely unsure sections do not trigger another turn. Missing configuration, disabled automation, invalid/exhausted session budgets or a clean tree skip the check. Errors and timeout do not block the host. This is not a check for every missing documentation obligation. The MCP server has no run-end hook; there, call `jev_check_diff` with `check: "docs"` before finishing.
 
 ## Known limits
 

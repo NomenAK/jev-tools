@@ -15,10 +15,13 @@ Use Node.js 24 or newer and npm. From a checkout, with development dependencies 
 ```sh
 npm ci --include=optional
 npm run typecheck
+npm run build
 npm run check:imports
 npm run lint
 npm test
 ```
+
+`npm run build` compiles only the MCP server into `dist/` (git-ignored); `npm pack` runs it automatically. To try the server against a checkout, see [From a clone](docs/mcp.md#from-a-clone).
 
 Keep optional native dependencies enabled for development. These checks make no Jev API calls and need no Jev key. Dependency installation may use the network. Some runner-identity tests skip when additional runners are unavailable locally; CI provisions those runners in [.github/workflows/ci.yml](.github/workflows/ci.yml).
 

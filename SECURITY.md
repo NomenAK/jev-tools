@@ -20,4 +20,6 @@ File evidence collection is confined to the repository, but optional commands ar
 
 Saved interactive configuration stores the API key in plaintext in a private user-level file (`~/.config/jev-agent-tools/config.json` by default). Protect the account and back-ups accordingly, or use environment variables from a secret manager instead.
 
+The MCP server (`jev-agent-tools-mcp`) has the same boundaries. It talks to its client only over stdio and opens no network listener. MCP client configuration files that contain a literal API key are as sensitive as the saved configuration; prefer the client's environment-variable interpolation and do not commit such files. Tool approval is the MCP client's responsibility; the server marks `jev_ask` as not read-only while commands are enabled.
+
 Expected execution of an explicitly supplied command, intentional submission of evidence, inaccurate judgments, and ordinary bugs or feature requests are not by themselves security vulnerabilities. Report ordinary product problems through issues; report host or API-service vulnerabilities to their respective maintainers. If unsure about a jev-tools security impact, use the private form.

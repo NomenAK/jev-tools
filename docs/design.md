@@ -8,7 +8,7 @@ Supply the discriminating evidence, not an argument about it. For comparisons, s
 
 ## Pure core, thin adapters
 
-Pure core transformations construct states, units, questions and display envelopes. Adapters own filesystem, Git, parsing and host effects; the HTTP client owns transport. Presets define fixed review questions and texts define host-facing guidance. Dependency checks keep shared contracts below consumers, reject cycles and account for erased type imports. Pure path operations and erased parser types are explicit architectural exceptions. Both hosts use the same HTTP judgment protocol.
+Pure core transformations construct states, units, questions and display envelopes. Adapters own filesystem, Git, parsing and host effects; the HTTP client owns transport. Presets define fixed review questions and texts define host-facing guidance. Hosts sit on top: `src/index.ts` registers the tools with pi and omp, and `src/mcp/` serves the same tool factories to any MCP client over stdio ([ADR 0010](adr/0010-mcp-server-thin-host.md), [setup](mcp.md)). Dependency checks keep shared contracts below consumers, reject cycles and account for erased type imports. Pure path operations and erased parser types are explicit architectural exceptions. Both hosts use the same HTTP judgment protocol.
 
 ## Typed intents and fixed checks
 
@@ -184,4 +184,4 @@ Optional native syntax parsing and file-search acceleration can be absent. Tools
 
 ## Architecture decisions
 
-See the [architecture decision records](adr/) for durable trade-offs. Start with the [README](../README.md) for installation and follow its six tool references for complete parameter contracts.
+See the [architecture decision records](adr/) for durable trade-offs. Start with the [README](../README.md) for installation and follow its six tool references for complete parameter contracts. MCP clients: [setup guide](mcp.md) and [agent instructions](agent-instructions.md).

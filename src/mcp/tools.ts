@@ -1,10 +1,10 @@
 import type { TSchema } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
 import { spawnExec } from "../adapters/exec.ts";
+import { ConfigController } from "../configuration.ts";
 import type { GitExec } from "../core/git.ts";
 import { Guide } from "../guide.ts";
 import { mcpHost } from "../host.ts";
-import { createJevClient, readConfig } from "../jev/client.ts";
 import type { JevClient } from "../jev/types.ts";
 import type { ToolDependencies } from "../runtime.ts";
 import { readSessionLimits, Session } from "../session.ts";
@@ -39,6 +39,8 @@ export interface McpToolOptions {
   /** Test seams; production uses the configured HTTP client and spawn. */
   client?: JevClient;
   exec?: GitExec;
+  /** Saved-configuration directory; defaults to the pi/omp setup location. */
+  configDirectory?: string;
 }
 
 function validationError(schema: TSchema, value: unknown): string | undefined {
@@ -50,19 +52,51 @@ function validationError(schema: TSchema, value: unknown): string | undefined {
 }
 
 /**
+ * Effective Jev client for MCP, with the same precedence as pi/omp minus the
+ * interactive layers: environment variables, then the configuration saved by
+ * `/jev-setup` in pi or omp. Storage problems never stop the server; the tools
+ * then explain the missing configuration and `warning` says why.
+ */
+export async function loadMcpClient(
+  env: NodeJS.ProcessEnv,
+  configDirectory?: string,
+): Promise<{ client?: JevClient; warning?: string }> {
+  try {
+    const controller = new ConfigController({
+      env,
+      ...(configDirectory ? { directory: configDirectory } : {}),
+    });
+    try {
+      await controller.initialize({});
+    } catch (error) {
+      // Saved storage unusable: environment configuration (if any) still applies.
+      return {
+        ...(controller.client ? { client: controller.client } : {}),
+        warning: error instanceof Error ? error.message : String(error),
+      };
+    }
+    return controller.client ? { client: controller.client } : {};
+  } catch (error) {
+    return { warning: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
  * Reuse the six harness tool factories unchanged. One MCP server process is
  * one session: limits, cache and counters live as long as the connection.
  */
-export function createMcpTools(options: McpToolOptions): {
+export async function createMcpTools(options: McpToolOptions): Promise<{
   tools: McpTool[];
   instructions: string;
   configured: boolean;
-} {
+  warning?: string;
+}> {
   const env = options.env ?? process.env;
   const host = mcpHost();
-  const config = readConfig(env);
-  const client =
-    options.client ?? (config ? createJevClient(config) : undefined);
+  const loaded = options.client
+    ? { client: options.client }
+    : await loadMcpClient(env, options.configDirectory);
+  const client = loaded.client;
   const dependencies: ToolDependencies = {
     client,
     host,
@@ -120,5 +154,10 @@ export function createMcpTools(options: McpToolOptions): {
   const instructions = [dependencies.runtime.guide.text, ...guidelines].join(
     "\n\n",
   );
-  return { tools, instructions, configured: client !== undefined };
+  return {
+    tools,
+    instructions,
+    configured: client !== undefined,
+    ...(loaded.warning ? { warning: loaded.warning } : {}),
+  };
 }
