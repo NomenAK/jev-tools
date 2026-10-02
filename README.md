@@ -2,6 +2,10 @@
 
 Six evidence-oriented tools for pi, omp and any MCP client, compatible with the Jev API format. Use them to navigate unfamiliar code, ask typed questions about repository evidence, review completed changes and select existing tests. They complement reading, searching and execution; they do not replace them.
 
+[![jev-agent-tools launch video: six tools, one habit, show the evidence. Click to play (74 s).](docs/media/jev-agent-tools-launch.jpg)](docs/media/jev-agent-tools-launch.mp4)
+
+[Watch the launch video](docs/media/jev-agent-tools-launch.mp4) (74 s, MP4).
+
 ## Install
 
 Install through your host's package manager, or register the MCP server with an MCP client. The npm package is `jev-agent-tools`. pi and omp load its TypeScript sources directly; the MCP server ships prebuilt.
