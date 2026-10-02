@@ -18,6 +18,12 @@ modules are not a stable library API.
 - MCP setup guide (`docs/mcp.md`) and a project instruction template for MCP agents
   (`docs/agent-instructions.md`, for `CLAUDE.md`, `AGENTS.md` or Kiro steering).
 - `JEV_TOOLS_BASH` and `JEV_TOOLS_ROOT` settings (Windows bash path; MCP root).
+- MCP Registry publication: `server.json` (`io.github.NomenAK/jev-agent-tools`) and
+  `mcpName` in `package.json`. After the npm publish, the release workflow waits for the
+  approved version and its `mcpName` on npm, then publishes with a pinned, checksum-verified
+  `mcp-publisher` over GitHub OIDC; an existing registry version is skipped.
+- `scripts/check-mcp-package.ts`: CI and release gate that installs the packed tarball
+  and checks the server answers `initialize` and lists its six tools.
 
 ### Changed
 

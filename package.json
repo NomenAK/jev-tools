@@ -3,6 +3,7 @@
   "version": "0.1.4",
   "type": "module",
   "license": "MIT",
+  "mcpName": "io.github.NomenAK/jev-agent-tools",
   "description": "Six evidence-oriented tools for pi and omp coding agents and any MCP client, compatible with the Jev API format.",
   "repository": {
     "type": "git",
@@ -39,6 +40,7 @@
     "docs/mcp.md",
     "docs/agent-instructions.md",
     "dist/",
+    "server.json",
     "SECURITY.md",
     "CONTRIBUTING.md",
     "docs/adr/"

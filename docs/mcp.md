@@ -44,6 +44,10 @@ npx -y -p jev-agent-tools jev-agent-tools-mcp --root <repository>
 
 `-p jev-agent-tools` is required because the binary name differs from the package name. Pin a version (`jev-agent-tools@X.Y.Z`) for reproducible setups.
 
+### From the MCP Registry
+
+Releases are also published to the official [MCP Registry](https://registry.modelcontextprotocol.io) as `io.github.NomenAK/jev-agent-tools`, from [`server.json`](../server.json). Clients and catalogs that read the registry can install the server from there; they start it as `npx jev-agent-tools` (the package's only binary) and ask for `JEV_TOOLS_URL` and the secret `JEV_TOOLS_API_KEY`. The manual entries below give the same result.
+
 ### Claude Code
 
 For a private registration, add it from the project directory with the CLI. Your shell expands the variables, so the values are stored in your private `~/.claude.json`, not in the project:

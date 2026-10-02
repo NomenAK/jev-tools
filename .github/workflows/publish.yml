@@ -7,6 +7,10 @@
 # Configure the npm trusted publisher for this repository, publish.yml and
 # npm-publish with permission for direct publication. Publishing uses OIDC only.
 # The GitHub Release remains a draft until the published package is verified.
+# After npm publication, the mcp-registry job publishes server.json (copied at
+# pack time) to the official MCP Registry with GitHub OIDC; no secret is needed.
+# Keep server.json's versions equal to package.json (test/server-json.test.ts
+# and scripts/check-mcp-package.ts enforce it).
 
 name: Publish
 
@@ -97,6 +101,11 @@ jobs:
           writeFileSync('release-artifact/notes.md', `${notes}\n`);
           console.log(`Packed ${pack.name}@${pack.version}: ${integrity}; ${pack.files.length} files.`);
           NODE
+      - name: Check the packed MCP server and its registry metadata
+        run: |
+          # The registry entry is published from this exact copy, not a later checkout.
+          cp server.json release-artifact/server.json
+          node scripts/check-mcp-package.ts "release-artifact/$(node -p "require('./release-artifact/pack.json')[0].filename")"
       - uses: actions/upload-artifact@v4
         with:
           name: release-candidate
@@ -166,6 +175,84 @@ jobs:
       - name: Publish with trusted publishing (OIDC)
         if: steps.registry.outputs.exists == 'false'
         run: npm publish "$TARBALL" --provenance --access public
+
+  mcp-registry:
+    name: Publish MCP Registry entry
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      MCP_REGISTRY: https://registry.modelcontextprotocol.io
+      # Pinned publisher; bump both together from the release's published digest.
+      MCP_PUBLISHER_VERSION: v1.8.1
+      MCP_PUBLISHER_SHA256: a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
+    steps:
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24.15.0
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-candidate
+          path: release-artifact
+      - name: Wait for the approved npm version and its mcpName
+        # The registry verifies ownership by reading mcpName from npm.
+        run: |
+          node --input-type=module <<'NODE'
+          import { spawnSync } from 'node:child_process';
+          import { readFileSync } from 'node:fs';
+          import { setTimeout as sleep } from 'node:timers/promises';
+          const [pack] = JSON.parse(readFileSync('release-artifact/pack.json', 'utf8'));
+          const server = JSON.parse(readFileSync('release-artifact/server.json', 'utf8'));
+          const approved = readFileSync('release-artifact/integrity.txt', 'utf8').trim();
+          const spec = `${pack.name}@${pack.version}`;
+          for (let attempt = 1; attempt <= 20; attempt++) {
+            const result = spawnSync('npm', ['view', spec, 'dist.integrity', 'mcpName', '--json', '--registry=https://registry.npmjs.org'], { encoding: 'utf8' });
+            if (result.error) throw result.error;
+            if (result.status === 0) {
+              // npm prints a bare string when only one requested field exists.
+              const parsed = JSON.parse(result.stdout);
+              const view = typeof parsed === 'string' ? { 'dist.integrity': parsed } : parsed;
+              if (view['dist.integrity'] !== approved) throw new Error(`${spec} on npm does not have the approved integrity.`);
+              if (view.mcpName !== server.name) throw new Error(`${spec} on npm has mcpName ${view.mcpName}, expected ${server.name}.`);
+              console.log(`${spec} is on npm with the approved integrity and mcpName ${view.mcpName}.`);
+              process.exit(0);
+            }
+            console.log(`Attempt ${attempt}: ${spec} not visible on npm yet.`);
+            await sleep(15_000);
+          }
+          throw new Error(`${spec} did not appear on npm within five minutes.`);
+          NODE
+      - name: Check registry idempotence (only 404 means absent)
+        id: entry
+        run: |
+          node --input-type=module <<'NODE'
+          import { appendFileSync, readFileSync } from 'node:fs';
+          const server = JSON.parse(readFileSync('release-artifact/server.json', 'utf8'));
+          const url = `${process.env.MCP_REGISTRY}/v0.1/servers/${encodeURIComponent(server.name)}/versions/${encodeURIComponent(server.version)}`;
+          const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+          if (response.status === 200) {
+            console.log(`${server.name}@${server.version} is already in the MCP Registry; skipping publication.`);
+            appendFileSync(process.env.GITHUB_OUTPUT, 'exists=true\n');
+          } else if (response.status === 404) {
+            console.log('Registry returned 404: version is absent.');
+            appendFileSync(process.env.GITHUB_OUTPUT, 'exists=false\n');
+          } else {
+            throw new Error(`Registry lookup returned HTTP ${response.status}; absence is not established.`);
+          }
+          NODE
+      - name: Install pinned mcp-publisher and validate server.json
+        run: |
+          curl -fsSL -o mcp-publisher.tar.gz "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
+          echo "${MCP_PUBLISHER_SHA256}  mcp-publisher.tar.gz" | sha256sum --check --strict
+          tar -xzf mcp-publisher.tar.gz mcp-publisher
+          ./mcp-publisher validate release-artifact/server.json
+      - name: Publish to the MCP Registry with GitHub OIDC
+        if: steps.entry.outputs.exists == 'false'
+        run: |
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish release-artifact/server.json
 
   release:
     name: Create draft release from changelog

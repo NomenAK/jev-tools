@@ -39,7 +39,7 @@ The package also ships `jev-agent-tools-mcp`, a stdio MCP server that exposes th
 }
 ```
 
-On Windows most clients start commands without a shell, so use `"command": "cmd"` with `"/c", "npx"` at the start of `args`. The [MCP setup guide](docs/mcp.md) has per-client files, CLI commands, variable interpolation, verification and troubleshooting. Add the [agent instructions](docs/agent-instructions.md) to `CLAUDE.md`, `AGENTS.md` or a Kiro steering file so the agent uses and reads the tools correctly.
+On Windows most clients start commands without a shell, so use `"command": "cmd"` with `"/c", "npx"` at the start of `args`. The [MCP setup guide](docs/mcp.md) has per-client files, CLI commands, variable interpolation, verification and troubleshooting. Releases are also listed in the official MCP Registry as `io.github.NomenAK/jev-agent-tools`. Add the [agent instructions](docs/agent-instructions.md) to `CLAUDE.md`, `AGENTS.md` or a Kiro steering file so the agent uses and reads the tools correctly.
 
 The server reads the same environment variables as pi and omp and the configuration saved by `/jev-setup`. One server process is one session. The automatic run-end documentation check does not exist in MCP; call `jev_check_diff` with `check: "docs"` instead. `jev_ask` is marked as not read-only while commands are enabled; set `JEV_TOOLS_ALLOW_COMMAND=0` to remove `command` from its schema.
 

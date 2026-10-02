@@ -25,6 +25,11 @@ jobs:
         run: npm run typecheck
       - name: Build MCP server
         run: npm run build
+      - name: MCP package check (packed server answers over stdio)
+        run: |
+          mkdir -p "$RUNNER_TEMP/pack"
+          npm pack --pack-destination "$RUNNER_TEMP/pack" > /dev/null
+          node scripts/check-mcp-package.ts "$RUNNER_TEMP"/pack/*.tgz
       - name: Import boundaries
         run: npm run check:imports
       - name: Lint
