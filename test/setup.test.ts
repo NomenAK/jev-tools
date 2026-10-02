@@ -89,6 +89,7 @@ async function fixture(env: NodeJS.ProcessEnv = {}) {
     selections,
     inputs,
     secrets,
+    context,
     notices,
     dialogs: () => dialogs,
     mode: (next: string, ui = true) => {
@@ -168,6 +169,55 @@ test("cancelling setup at each stage preserves the active configuration and neve
       ),
     );
   } finally {
+    await f.close();
+  }
+});
+
+test("startup returns while credentials are pending and setup can still complete", async () => {
+  const f = await fixture();
+  const entered = Promise.withResolvers<void>();
+  const endpoint = Promise.withResolvers<string | undefined>();
+  const applied = Promise.withResolvers<void>();
+  let startupReturned = false;
+  f.selections.push("Configure now", "This session only");
+  f.secrets.push("synthetic-key");
+  f.context.ui.input = async () => {
+    entered.resolve();
+    f.context.ui.input = async () => "test-model";
+    return endpoint.promise;
+  };
+  const notify = f.context.ui.notify;
+  f.context.ui.notify = (message) => {
+    notify(message);
+    if (message.startsWith("Jev configuration applied")) applied.resolve();
+  };
+  const startup = f.start()?.then(() => {
+    startupReturned = true;
+  });
+  try {
+    await entered.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(
+      startupReturned,
+      true,
+      "human input must not hold the host event open",
+    );
+    endpoint.resolve("https://synthetic.example/v1");
+    await applied.promise;
+    assert.deepEqual(f.config.values(), {
+      url: "https://synthetic.example/v1",
+      model: "test-model",
+      apiKey: "synthetic-key",
+    });
+    await assert.rejects(
+      readFile(join(f.directory, "settings", "config.json")),
+      {
+        code: "ENOENT",
+      },
+    );
+  } finally {
+    endpoint.resolve(undefined);
+    await startup;
     await f.close();
   }
 });

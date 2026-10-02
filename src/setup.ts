@@ -62,11 +62,11 @@ export class Setup {
         )
           return;
         this.offered = true;
-        const choice = await ctx.ui.select(
-          "Jev Tools needs an endpoint and API key",
-          ["Configure now", "Later"],
-        );
-        if (choice === "Configure now") await this.configure(ctx);
+        // Host event deadlines bound work, not the time needed to find credentials.
+        // Return before waiting for input so omp clears the handler's UI abort timer.
+        void this.offer(ctx).catch((error: unknown) => {
+          ctx.ui.notify(this.message(error), "error");
+        });
       } catch (error) {
         if (this.interactive(ctx)) ctx.ui.notify(this.message(error), "error");
       }
@@ -100,6 +100,14 @@ export class Setup {
     return error instanceof Error
       ? error.message
       : "Jev configuration failed; the previous configuration was kept.";
+  }
+
+  private async offer(ctx: SetupContext): Promise<void> {
+    const choice = await ctx.ui.select(
+      "Jev Tools needs an endpoint and API key",
+      ["Configure now", "Later"],
+    );
+    if (choice === "Configure now") await this.configure(ctx);
   }
 
   private async configure(ctx: SetupContext): Promise<void> {
