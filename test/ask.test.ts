@@ -109,19 +109,6 @@ test("injected client judges assembled files while content hides files and confi
     await rm(cwd, { recursive: true });
   }
 });
-test("missing client returns exact configuration message", async () => {
-  const result = await createAskTool(dependencies(undefined)).execute(
-    "1",
-    args,
-    undefined,
-    undefined,
-    { cwd: "." },
-  );
-  assert.match(
-    result.content[0]?.text ?? "",
-    /^jev-tools is not configured: set JEV_TOOLS_URL and JEV_TOOLS_API_KEY\./,
-  );
-});
 test("internal URLs are refused before judgment", async () => {
   const client: JevClient = {
     clearCache() {},

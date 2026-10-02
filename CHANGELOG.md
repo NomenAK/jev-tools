@@ -9,9 +9,18 @@ modules are not a stable library API.
 
 ## [Unreleased]
 
+### Added
+
+- Interactive configuration for pi and omp: first-launch offer, `/jev-setup`, masked
+  key entry, `--jev-skip-setup`, `--jev-url` and `--jev-model`. Configuration applies
+  immediately; optional saving uses a private file outside the repository and stores the
+  key in plaintext. No dialog appears in print, JSON, RPC or sub-agent sessions.
+
 ### Changed
 
 - Release publication uses trusted publishing (OIDC) without a temporary npm token.
+- Document the npm release's verified pi 1.0.0 integration, simulated-service smoke
+  scope and non-blocking `@sinclair/typebox` packaging warning.
 
 ## [0.1.3] - 2026-10-02
 

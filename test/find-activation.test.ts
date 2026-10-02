@@ -9,7 +9,7 @@ for (const scenario of [
   { omp: false, native: false },
 ]) {
   test(`session_start activates discovery only in omp without native find (${JSON.stringify(scenario)})`, async () => {
-    const handlers: Record<string, () => Promise<void> | void> = {};
+    const handlers: Record<string, (() => Promise<void> | void)[]> = {};
     const active = scenario.native ? ["read", "find"] : ["read"];
     let resolveActivation: (() => void) | undefined;
     let updated: string[] | undefined;
@@ -19,9 +19,15 @@ for (const scenario of [
     const api = {
       ...(scenario.omp ? { pi: {} } : {}),
       on(name: string, handler: () => Promise<void> | void) {
-        handlers[name] = handler;
+        handlers[name] ??= [];
+        handlers[name].push(handler);
       },
       registerTool() {},
+      registerFlag() {},
+      registerCommand() {},
+      getFlag() {
+        return undefined;
+      },
       getActiveTools() {
         return active;
       },
@@ -34,7 +40,7 @@ for (const scenario of [
       },
     };
     extension(api as unknown as ExtensionAPI & { pi?: unknown });
-    const handler = handlers.session_start;
+    const handler = handlers.session_start?.[0];
     assert.ok(handler);
     let completed = false;
     const started = Promise.resolve(handler()).then(() => {

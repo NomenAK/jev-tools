@@ -42,12 +42,8 @@ export interface AskFilesDetails {
   skipped: string[];
   envelope: Envelope;
 }
-export function createAskFilesTool({
-  client,
-  host,
-  runtime,
-  exec: execute,
-}: ToolDependencies) {
+export function createAskFilesTool(dependencies: ToolDependencies) {
+  const { host, runtime, exec: execute } = dependencies;
   return {
     name: "jev_ask_files",
     label: "Jev ask files",
@@ -70,6 +66,7 @@ export function createAskFilesTool({
       _update: unknown,
       ctx: { cwd: string } & GuideContext,
     ) {
+      const client = dependencies.client;
       const started = performance.now();
       const exec = shareGitInventory(execute);
       const totals = {

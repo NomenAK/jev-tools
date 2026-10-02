@@ -57,6 +57,11 @@ for (const omp of [false, true]) {
     const api = {
       ...(omp ? { pi: {} } : {}),
       on() {},
+      registerFlag() {},
+      registerCommand() {},
+      getFlag() {
+        return undefined;
+      },
       registerTool(tool: RegisteredTool) {
         tools.push(tool);
       },

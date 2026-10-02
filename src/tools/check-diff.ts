@@ -83,12 +83,8 @@ function unitLabel(unit: EvidenceUnit): string {
     .slice(0, 8);
   return `${unit.file}${range ? `:${range.start}-${range.end}` : ""} ${unit.name} [${fingerprint}]`;
 }
-export function createCheckDiffTool({
-  client,
-  host,
-  runtime,
-  exec: execute,
-}: ToolDependencies) {
+export function createCheckDiffTool(dependencies: ToolDependencies) {
+  const { host, runtime, exec: execute } = dependencies;
   return {
     name: "jev_check_diff",
     label: "Jev check diff",
@@ -110,6 +106,7 @@ export function createCheckDiffTool({
       _update: unknown,
       ctx: { cwd: string } & GuideContext,
     ) {
+      const client = dependencies.client;
       const exec = shareGitInventory(execute);
       if (args.check === "docs" || args.check === "spec") {
         const deps = { client, host, runtime, exec };

@@ -46,12 +46,8 @@ export const findParameters = Type.Object(
   { additionalProperties: false },
 );
 export type FindArgs = Static<typeof findParameters>;
-export function createFindFilesTool({
-  client,
-  host,
-  runtime,
-  exec: execute,
-}: ToolDependencies) {
+export function createFindFilesTool(dependencies: ToolDependencies) {
+  const { host, runtime, exec: execute } = dependencies;
   return {
     name: "jev_find_files",
     label: "Jev find files",
@@ -77,6 +73,7 @@ export function createFindFilesTool({
       _update: unknown,
       ctx: { cwd: string } & GuideContext,
     ) {
+      const client = dependencies.client;
       const started = performance.now();
       const exec = shareGitInventory(execute);
       const totals = {

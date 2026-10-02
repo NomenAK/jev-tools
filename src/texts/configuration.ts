@@ -1,2 +1,2 @@
 export const NOT_CONFIGURED =
-  "jev-tools is not configured: set JEV_TOOLS_URL and JEV_TOOLS_API_KEY.";
+  "jev-tools is not configured: set JEV_TOOLS_URL and JEV_TOOLS_API_KEY, or run /jev-setup in the main interactive terminal.";

@@ -43,9 +43,10 @@ const parameters = Type.Object(
 type LocateArgs = Static<typeof parameters>;
 
 export function createLocateTool(
-  { client, host, runtime, exec: execute }: ToolDependencies,
+  dependencies: ToolDependencies,
   loadParser: () => Promise<SyntaxParser | undefined> = loadSyntaxParser,
 ) {
+  const { host, runtime, exec: execute } = dependencies;
   return {
     name: "jev_locate_in_file",
     label: "Jev locate in file",
@@ -72,6 +73,7 @@ export function createLocateTool(
       _update: unknown,
       ctx: { cwd: string } & GuideContext,
     ) {
+      const client = dependencies.client;
       const started = performance.now();
       const exec = shareGitInventory(execute);
       const results: Judgment[] = [];
