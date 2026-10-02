@@ -138,7 +138,8 @@ jobs:
           if (integrity !== recorded || integrity !== pack.integrity || integrity !== process.env.EXPECTED_PACKAGE_INTEGRITY) {
             throw new Error('Tarball integrity differs from recorded or independently approved integrity. Set EXPECTED_PACKAGE_INTEGRITY in npm-publish before approval.');
           }
-          appendFileSync(process.env.GITHUB_ENV, `PACKAGE_SPEC=${pack.name}@${pack.version}\nTARBALL=release-artifact/${pack.filename}\nPACKAGE_INTEGRITY=${integrity}\n`);
+          // Leading "./" makes npm treat the path as a local tarball, not a GitHub "owner/repo" spec.
+          appendFileSync(process.env.GITHUB_ENV, `PACKAGE_SPEC=${pack.name}@${pack.version}\nTARBALL=./release-artifact/${pack.filename}\nPACKAGE_INTEGRITY=${integrity}\n`);
           console.log(`Approved ${pack.name}@${pack.version}: ${integrity}`);
           NODE
       - name: Check registry idempotence (only E404 means absent)
