@@ -9,15 +9,15 @@ Install through your host's package manager. The package ships TypeScript source
 ### pi
 
 ```sh
-pi install npm:jev-tools@0.1.0
+pi install npm:jev-tools@0.1.1
 # Project-local installation:
-pi install -l npm:jev-tools@0.1.0
+pi install -l npm:jev-tools@0.1.1
 ```
 
 ### omp
 
 ```sh
-omp plugin install jev-tools@0.1.0
+omp plugin install jev-tools@0.1.1
 ```
 
 ### Requirements and compatibility
