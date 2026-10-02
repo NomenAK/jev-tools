@@ -2,6 +2,7 @@ import { matchesGlob, relative, resolve } from "node:path";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "@sinclair/typebox";
 import { createAnalysisContext } from "../adapters/analysis-context.ts";
+import { canonicalPath } from "../adapters/canonical-path.ts";
 import { collectUnits } from "../adapters/git.ts";
 import { resolveBase } from "../adapters/git-base.ts";
 import { shareGitInventory } from "../adapters/git-inventory.ts";
@@ -125,6 +126,7 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
       ctx: { cwd: string } & GuideContext,
     ) {
       const client = dependencies.client;
+      const cwd = await canonicalPath(ctx.cwd);
       const started = performance.now();
       const exec = shareGitInventory(execute);
       const totals = {
@@ -168,14 +170,14 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
           ...hostUsage(host.isOmp, costKnown ? totals.usage : undefined),
         };
       };
-      const comparison = await resolveBase(exec, ctx.cwd, args.base, signal);
+      const comparison = await resolveBase(exec, cwd, args.base, signal);
       if (!comparison.ok) return finish({ refusal: comparison.error });
       const analysis = await createAnalysisContext();
       const [inventory, diff] = await Promise.all([
-        collectTestInventory(exec, ctx.cwd, signal),
+        collectTestInventory(exec, cwd, signal),
         collectUnits(
           exec,
-          { cwd: ctx.cwd, base: comparison.base, signal },
+          { cwd: cwd, base: comparison.base, signal },
           analysis.parser,
         ),
       ]);
@@ -387,6 +389,7 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
         const result = await client.judge(state, questions, {
           signal,
           witnesses: witnessIds,
+          ...runtime.session.requestGate(),
           beforeRequest: (questionCount) => {
             if (args.max_calls !== undefined && sent >= args.max_calls) {
               budget = {
@@ -735,7 +738,7 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
         lines: commands.commands.map((command) => ({
           type: "command" as const,
           ...command,
-          cwd: relative(ctx.cwd, resolve(inventory.cwd, command.cwd)) || ".",
+          cwd: relative(cwd, resolve(inventory.cwd, command.cwd)) || ".",
         })),
       });
     },

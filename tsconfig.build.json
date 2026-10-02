@@ -1,0 +1,17 @@
+{
+  // Emits plain JavaScript for the MCP server binary only. Node refuses to
+  // strip TypeScript types for files under node_modules, so an installed
+  // package cannot run src/mcp/main.ts directly. pi and omp keep loading src/.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "allowImportingTsExtensions": false,
+    "rewriteRelativeImportExtensions": true,
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": [],
+  "files": ["src/mcp/main.ts"]
+}

@@ -20,3 +20,14 @@ export interface Names {
   byName: string;
   semantic: string;
 }
+/** MCP clients name their native tools differently; describe them generically. */
+export function mcpHost(): Host {
+  return {
+    isOmp: false,
+    names: {
+      grep: "your text search tool",
+      byName: "your file-name search tool",
+      semantic: "jev_find_files",
+    },
+  };
+}

@@ -20,9 +20,36 @@ pi install -l npm:jev-agent-tools@0.1.4
 omp plugin install jev-agent-tools@0.1.4
 ```
 
+### Any MCP client
+
+The package also ships `jev-agent-tools-mcp`, a dependency-free MCP server over stdio that exposes the same six tools to any MCP client (Claude Desktop, Claude Code, Kiro, Cursor and others). It is available from the first release after 0.1.3. Most clients accept an `mcpServers` entry like this; see your client's documentation for where the file lives:
+
+```json
+{
+  "mcpServers": {
+    "jev": {
+      "command": "npx",
+      "args": ["-y", "-p", "jev-agent-tools", "jev-agent-tools-mcp", "--root", "/path/to/repository"],
+      "env": {
+        "JEV_TOOLS_URL": "${YOUR_JEV_ENDPOINT}",
+        "JEV_TOOLS_API_KEY": "${YOUR_JEV_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+The repository the tools work in is `--root`, else `JEV_TOOLS_ROOT`, else the server's working directory. All variables in [Configure](#configure) apply. One server process is one session: limits, cache and counters last as long as the connection. The reading guide and the `jev_ask` policy are sent as the server's `instructions`. Differences from pi and omp:
+
+- The automatic run-end documentation check is a host hook and does not run; call `jev_check_diff` with `check: "docs"` instead.
+- MCP clients apply their own approval to tool calls. `jev_ask` is marked as not read-only while commands are enabled; set `JEV_TOOLS_ALLOW_COMMAND=0` to remove `command` from its schema.
+- The server speaks protocol versions 2024-11-05 through 2025-11-25 via `initialize`, and 2026-07-28 via `server/discover`. It offers tools only, not resources or prompts.
+
+From a clone, run `npm run build` and point the client at `node dist/mcp/main.js`. Node does not run the TypeScript sources from inside `node_modules`, which is why the server ships as compiled JavaScript while pi and omp load `src/`.
+
 ### Requirements and compatibility
 
-Requires Node.js 24 or later. Supported host baselines are pi 0.87.1 and omp 18.4.10. These are support baselines, not claims that every later version has been individually validated. omp uses its Bun runtime; Node.js is also required for Node-based project checks. Git and, for optional command evidence, Bash must be available. Optional native parsers and file-search acceleration may be unavailable on some platforms; affected tools report their limitations.
+Requires Node.js 24 or later. Supported host baselines are pi 0.87.1 and omp 18.4.10. These are support baselines, not claims that every later version has been individually validated. omp uses its Bun runtime; Node.js is also required for Node-based project checks. Git and, for optional command evidence, Bash must be available. On Windows, command evidence uses Git for Windows bash (found next to `git` on `PATH` or under Program Files); the WSL `bash.exe` launchers are never used. Set `JEV_TOOLS_BASH` to the full path of another bash. Optional native parsers and file-search acceleration may be unavailable on some platforms; affected tools report their limitations.
 
 The published `jev-agent-tools@0.1.3` package was also checked with **pi 1.0.0** on Linux under Node.js 24.15.0: npm installation, TypeScript checking against the host types, all six tools in the actual CLI, and reading-guide injection passed. The CLI smoke used a simulated conversation provider and Jev endpoint; it verifies host integration, not live model accuracy or every tool scenario.
 
@@ -68,6 +95,8 @@ export JEV_TOOLS_MODEL="openjev"
 | `JEV_TOOLS_MAX_USD` | Session-wide finite non-negative cost limit, including fractions; absent or empty means unlimited. Invalid values refuse requests. |
 | `JEV_TOOLS_ALLOW_COMMAND` | `0` disables `command` in `jev_ask`; otherwise commands run with ordinary shell permissions, without an additional sandbox. |
 | `JEV_TOOLS_AUTO_DOCS` | `0` disables the automatic run-end documentation check. |
+| `JEV_TOOLS_BASH` | Optional full path of the bash used for `jev_ask` commands on Windows. |
+| `JEV_TOOLS_ROOT` | MCP server only: repository directory when `--root` is not given. |
 
 Without the endpoint or key, tools remain registered and explain the missing configuration; the automatic documentation check is disabled. There is no fallback to a chat model. Per-tool `max_calls` is separate from session limits. A model name echoed by the response does not establish which model was actually served.
 

@@ -20,7 +20,7 @@ Leading-option probability (p_max) is the probability of the most likely choice,
 
 ## Bounded work, visible limits
 
-Admission limits, request planning, rate limiting and retry bounds are distinct. Oversized evidence is refused or visibly omitted, never silently converted into an ordinary verdict. Per-invocation max_calls and session call/cost limits are separate; control and severity requests count too. Unjudged tests stay selected. Automatic documentation review is the only run-end automation and can request at most one extra turn.
+Admission limits, request planning, rate limiting and retry bounds are distinct. Oversized evidence is refused or visibly omitted, never silently converted into an ordinary verdict. Per-invocation max_calls and session call/cost limits are separate; control and severity requests count too. Under a session USD limit, requests are admitted one at a time so each admission sees all cost reported so far. Unjudged tests stay selected. Automatic documentation review is the only run-end automation and can request at most one extra turn.
 
 Successful non-command judgments are cached only in session memory by canonical evidence, question and requested model string. Errors are not cached; command judgments bypass caching. The default openjev alias can move, and an echoed model name does not prove served-model identity. Fractional budgets bound admission, not an exact prediction of the final request's cost.
 

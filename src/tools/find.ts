@@ -1,4 +1,5 @@
 import { type Static, Type } from "@sinclair/typebox";
+import { canonicalPath } from "../adapters/canonical-path.ts";
 import { collectSearchExcerpts } from "../adapters/files.ts";
 import { prefilter } from "../adapters/find.ts";
 import { shareGitInventory } from "../adapters/git-inventory.ts";
@@ -74,6 +75,7 @@ export function createFindFilesTool(dependencies: ToolDependencies) {
       ctx: { cwd: string } & GuideContext,
     ) {
       const client = dependencies.client;
+      const cwd = await canonicalPath(ctx.cwd);
       const started = performance.now();
       const exec = shareGitInventory(execute);
       const totals = {
@@ -130,7 +132,7 @@ export function createFindFilesTool(dependencies: ToolDependencies) {
             : C.FIND_FILES_READ;
       const candidates = await prefilter(
         exec,
-        ctx.cwd,
+        cwd,
         keywords,
         candidateLimit,
         args.scope,
@@ -190,6 +192,7 @@ export function createFindFilesTool(dependencies: ToolDependencies) {
       ): Promise<Judgment> => {
         const result = await client.judge(state, questions, {
           signal,
+          ...runtime.session.requestGate(),
           beforeRequest: (count) => {
             if (args.max_calls !== undefined && sent >= args.max_calls) {
               budget = {
@@ -308,7 +311,7 @@ export function createFindFilesTool(dependencies: ToolDependencies) {
       const contentResults = await Promise.all(
         contentBatches.map(async (paths) => {
           const read = await collectSearchExcerpts(
-            ctx.cwd,
+            cwd,
             paths,
             keywords,
             signal,

@@ -1,4 +1,5 @@
 import type { Envelope } from "./core/output.ts";
+import type { JudgmentOptions } from "./jev/types.ts";
 import type { Result } from "./result.ts";
 
 export interface SessionLimits {
@@ -53,6 +54,8 @@ export class Session {
     cacheHits: 0,
   };
   private readonly limits: SessionLimits;
+  private inFlight = 0;
+  private waiters: (() => void)[] = [];
   constructor(limits: SessionLimits) {
     this.limits = limits;
   }
@@ -73,7 +76,27 @@ export class Session {
     }
     this.counters.calls++;
     this.counters.questions += questions;
+    this.inFlight++;
     return { ok: true };
+  }
+  /**
+   * Under a USD limit, admit one request at a time so each admission sees the
+   * cost reported by every earlier request. Without the gate, concurrent
+   * batches are all admitted before any cost arrives and overshoot the limit.
+   * At most the final admitted request can exceed the limit, as documented.
+   */
+  requestGate(): Pick<JudgmentOptions, "awaitAdmission" | "afterRequest"> {
+    return {
+      awaitAdmission: async () => {
+        while (this.limits.maxUsd !== undefined && this.inFlight > 0)
+          await new Promise<void>((resolve) => this.waiters.push(resolve));
+      },
+      afterRequest: () => {
+        if (this.inFlight > 0) this.inFlight--;
+        // Wake every waiter; each rechecks synchronously and only one admits.
+        for (const resolve of this.waiters.splice(0)) resolve();
+      },
+    };
   }
   recordUsage(usage: { costUsd: number }): void {
     this.counters.costUsd += usage.costUsd;
@@ -93,6 +116,8 @@ export class Session {
     return { ...this.counters };
   }
   reset(): void {
+    this.inFlight = 0;
+    for (const resolve of this.waiters.splice(0)) resolve();
     this.counters = {
       calls: 0,
       questions: 0,

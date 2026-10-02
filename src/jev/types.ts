@@ -48,6 +48,10 @@ export interface JudgmentOptions {
   witnesses?: readonly string[];
   cache?: boolean;
   beforeRequest?: (questionCount: number) => Result<object>;
+  /** Awaited before each admission check; lets a session serialize under a USD limit. */
+  awaitAdmission?: () => Promise<void>;
+  /** Called once per admitted request when its response (or failure) is in. */
+  afterRequest?: () => void;
   onUsage?: (usage: { inputTokens: number; costUsd: number }) => void;
 }
 export interface JevClient {

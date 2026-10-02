@@ -3,7 +3,7 @@
   "version": "0.1.4",
   "type": "module",
   "license": "MIT",
-  "description": "Six evidence-oriented tools for pi and omp coding agents, compatible with the Jev API format.",
+  "description": "Six evidence-oriented tools for pi and omp coding agents and any MCP client, compatible with the Jev API format.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/NomenAK/jev-tools.git"
@@ -19,7 +19,9 @@
     "test-selection",
     "pi",
     "omp",
-    "jev"
+    "jev",
+    "mcp",
+    "model-context-protocol"
   ],
   "files": [
     "src/",
@@ -33,8 +35,14 @@
     "docs/tools/jev_find_files.md",
     "docs/tools/jev_locate_in_file.md",
     "docs/tools/jev_check_diff.md",
-    "docs/tools/jev_select_tests.md"
+    "docs/tools/jev_select_tests.md",
+    "dist/",
+    "SECURITY.md",
+    "docs/adr/"
   ],
+  "bin": {
+    "jev-agent-tools-mcp": "dist/mcp/main.js"
+  },
   "pi": {
     "extensions": [
       "./src/index.ts"
@@ -49,6 +57,8 @@
     "node": ">=24"
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "npm run build",
     "typecheck": "tsc --noEmit",
     "check:imports": "node scripts/check-imports.ts",
     "lint": "biome check src test scripts",

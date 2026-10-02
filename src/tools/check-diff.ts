@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { type Static, Type } from "@sinclair/typebox";
 import { createAnalysisContext } from "../adapters/analysis-context.ts";
+import { canonicalPath } from "../adapters/canonical-path.ts";
 import { collectUnits } from "../adapters/git.ts";
 import { resolveBase } from "../adapters/git-base.ts";
 import { shareGitInventory } from "../adapters/git-inventory.ts";
@@ -107,19 +108,20 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
       ctx: { cwd: string } & GuideContext,
     ) {
       const client = dependencies.client;
+      const cwd = await canonicalPath(ctx.cwd);
       const exec = shareGitInventory(execute);
       if (args.check === "docs" || args.check === "spec") {
         const deps = { client, host, runtime, exec };
         const result =
           args.check === "docs"
             ? await runDocsCheck(deps, {
-                cwd: ctx.cwd,
+                cwd: cwd,
                 base: args.base,
                 signal,
                 maxCalls: args.max_calls,
               })
             : await runSpecCheck(deps, {
-                cwd: ctx.cwd,
+                cwd: cwd,
                 base: args.base,
                 specPath: args.spec_path,
                 signal,
@@ -223,14 +225,14 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
         };
       };
       if (!client) return finish(NOT_CONFIGURED);
-      const comparison = await resolveBase(exec, ctx.cwd, args.base, signal);
+      const comparison = await resolveBase(exec, cwd, args.base, signal);
       if (!comparison.ok) return finish(comparison.error);
       const base = comparison.base;
       const analysis = await createAnalysisContext();
       const collected = await collectUnits(
         exec,
         {
-          cwd: ctx.cwd,
+          cwd: cwd,
           base,
           signal,
         },
@@ -271,6 +273,7 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
       let reservedMatrixCalls = batches.batches.length;
       const optionsFor = (matrixRequest = false): JudgmentOptions => ({
         signal,
+        ...runtime.session.requestGate(),
         beforeRequest(questionCount) {
           if (matrixRequest && reservedMatrixCalls > 0) reservedMatrixCalls--;
           const limit =
@@ -312,7 +315,7 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
       )
         ? await collectRiskCallers(
             exec,
-            { cwd: ctx.cwd, base, signal },
+            { cwd: cwd, base, signal },
             collected.units,
             collected.files,
             analysis.parser,

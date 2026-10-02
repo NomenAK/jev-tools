@@ -1,0 +1,6 @@
+# Keep LF in the working tree on every platform. Biome, the omp rule/pi
+# guideline parity test and bash command scripts all expect LF.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.gif binary

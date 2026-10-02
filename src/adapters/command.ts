@@ -21,6 +21,7 @@ import {
 import type { GitExec } from "../core/git.ts";
 import type { Result } from "../result.ts";
 import { outputLines } from "./output-lines.ts";
+import { resolveShell } from "./shell.ts";
 
 export interface CommandOutput {
   command: string;
@@ -62,13 +63,13 @@ export async function captureCommand(
       killed: boolean;
     };
     try {
+      const shell = resolveShell();
       executed = await exec(
-        "env",
+        shell.executable,
         [
-          "CI=1",
-          "bash",
+          ...shell.prefix,
           "-c",
-          `exec >"$1" 2>"$2"; set --; (\n${command}\n)\nexit $?`,
+          `${shell.scriptPrefix}exec >"$1" 2>"$2"; set --; (\n${command}\n)\nexit $?`,
           "jev",
           stdoutPath,
           stderrPath,

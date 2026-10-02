@@ -319,6 +319,7 @@ export async function runDocsCheck(
           prepared.questions,
           {
             signal,
+            ...deps.runtime.session.requestGate(),
             beforeRequest(questionCount) {
               if (budget?.kind === "session")
                 return { ok: false, error: budget.message };

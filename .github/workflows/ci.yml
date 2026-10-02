@@ -23,6 +23,8 @@ jobs:
         run: npm ci --include=optional
       - name: Typecheck
         run: npm run typecheck
+      - name: Build MCP server
+        run: npm run build
       - name: Import boundaries
         run: npm run check:imports
       - name: Lint

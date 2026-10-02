@@ -9,6 +9,37 @@ modules are not a stable library API.
 
 ## [Unreleased]
 
+### Added
+
+- `jev-agent-tools-mcp`: a dependency-free MCP stdio server exposing the same six
+  tools to any MCP client. It reuses the existing tool factories, session limits,
+  HTTP client and saved configuration; the binary ships as compiled JavaScript built
+  by `npm run build`.
+- MCP setup guide (`docs/mcp.md`) and a project instruction template for MCP agents
+  (`docs/agent-instructions.md`, for `CLAUDE.md`, `AGENTS.md` or Kiro steering).
+- `JEV_TOOLS_BASH` and `JEV_TOOLS_ROOT` settings (Windows bash path; MCP root).
+
+### Changed
+
+- The npm package now includes `SECURITY.md` and `docs/adr/`, which shipped
+  documentation already linked to.
+
+### Fixed
+
+- `JEV_TOOLS_MAX_USD` could be overshot by up to seven requests: concurrent batches
+  were all admitted before any cost was reported. Under a USD limit, requests are
+  now admitted one at a time, so only the final admitted request can exceed it.
+- Windows: `jev_ask` commands ran `env CI=1 bash`, which fails without `env` and
+  resolves to the WSL launcher. Git for Windows bash is now used.
+- Windows: imported providers were never found for `jev_check_diff` risk callers
+  because a repository path was resolved with platform path semantics.
+- Windows: node:test `file:///C:/...` failure locations (including `%20`) were not
+  mapped back to repository files.
+- Windows: an 8.3 short working directory (for example `C:\Users\NAME~1`) did not
+  relate to the Git root, which emptied import closures and file references.
+- Line endings are pinned to LF via `.gitattributes`, so lint and the rule/guideline
+  parity check pass on Windows checkouts with `core.autocrlf=true`.
+
 ## [0.1.4] - 2026-10-02
 
 ### Added
