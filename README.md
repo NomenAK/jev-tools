@@ -1,23 +1,23 @@
-# jev-tools
+# jev-agent-tools
 
 Six evidence-oriented tools for pi and omp, compatible with the Jev API format. Use them to navigate unfamiliar code, ask typed questions about repository evidence, review completed changes and select existing tests. They complement reading, searching and execution; they do not replace them.
 
 ## Install
 
-Install through your host's package manager. The npm package is `@nomenak/jev-tools`. It ships TypeScript sources; no separate compilation is required.
+Install through your host's package manager. The npm package is `jev-agent-tools`. It ships TypeScript sources; no separate compilation is required.
 
 ### pi
 
 ```sh
-pi install npm:@nomenak/jev-tools@0.1.2
+pi install npm:jev-agent-tools@0.1.3
 # Project-local installation:
-pi install -l npm:@nomenak/jev-tools@0.1.2
+pi install -l npm:jev-agent-tools@0.1.3
 ```
 
 ### omp
 
 ```sh
-omp plugin install @nomenak/jev-tools@0.1.2
+omp plugin install jev-agent-tools@0.1.3
 ```
 
 ### Requirements and compatibility
