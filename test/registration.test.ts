@@ -118,7 +118,7 @@ for (const omp of [false, true]) {
   });
 }
 
-test("omp package always applies the specified jev_ask guideline", async () => {
+test("pi guideline and omp rule carry the same jev_ask policy", async () => {
   const rule = await readFile(
     new URL("../rules/jev-ask.md", import.meta.url),
     "utf8",

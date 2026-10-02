@@ -4,20 +4,20 @@ Six evidence-oriented tools for pi and omp, compatible with the Jev API format. 
 
 ## Install
 
-Install through your host's package manager. The package ships TypeScript sources; no separate compilation is required.
+Install through your host's package manager. The npm package is `@nomenak/jev-tools`. It ships TypeScript sources; no separate compilation is required.
 
 ### pi
 
 ```sh
-pi install npm:jev-tools@0.1.1
+pi install npm:@nomenak/jev-tools@0.1.1
 # Project-local installation:
-pi install -l npm:jev-tools@0.1.1
+pi install -l npm:@nomenak/jev-tools@0.1.1
 ```
 
 ### omp
 
 ```sh
-omp plugin install jev-tools@0.1.1
+omp plugin install @nomenak/jev-tools@0.1.1
 ```
 
 ### Requirements and compatibility
@@ -82,7 +82,7 @@ In a final report, explicitly identify conclusions marked `unsure` or `abstain` 
 
 ## Usage guidance for pi and omp
 
-The extension supplies the shared reading guide in both hosts. omp discovers enabled npm plugin rules during normal startup; pi does not automatically discover the package's `rules/` directory. The pi integration supplies the decision policy through its prompt hook when `jev_ask` is active. A forced opaque prompt override may bypass this integration; disabled tools or disabled omp rules are not covered. This README block is recommended usage guidance, not itself an installed instruction:
+The extension supplies the shared reading guide in both hosts. omp discovers enabled npm plugin rules during normal startup; pi does not automatically discover the package's `rules/` directory. In pi, the same decision policy is part of the `jev_ask` tool guidelines, so it is present whenever `jev_ask` is active. A forced opaque prompt override may bypass this integration; disabled tools or disabled omp rules are not covered. This README block is recommended usage guidance, not itself an installed instruction:
 
 > Before concluding that a failure is a code bug, an incorrect test or an environment problem, or that a plan matches documentation, pass the relevant files to [jev_ask](docs/tools/jev_ask.md) and weigh its answer against your own reading. Include both the failing test and the code it exercises; identify any conclusion that remains unconfirmed.
 

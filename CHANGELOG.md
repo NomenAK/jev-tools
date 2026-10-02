@@ -11,8 +11,8 @@ modules are not a stable library API.
 
 ## [0.1.1] - 2026-10-02
 
-First release published to npm. Version 0.1.0 was tagged but never published:
-its publish workflow failed before upload.
+First release published to npm, as `@nomenak/jev-tools`. Version 0.1.0 was tagged
+but never published: its publish workflow failed before upload.
 
 ### Added
 
@@ -26,14 +26,14 @@ its publish workflow failed before upload.
   session call/cost budgets. Optional commands use host permissions, not a sandbox.
 - npm extension installation for both hosts, shared result-reading guidance,
   tool reference documentation and architecture decisions.
-- The pi prompt hook delivers the decision policy from the installed rule when
-  `jev_ask` is active; omp retains native rule discovery.
+- In pi, the decision policy ships with the `jev_ask` tool guidelines and is present
+  whenever `jev_ask` is active; omp retains native rule discovery.
 
 ### Compatibility
 
 Requires Node.js 24 or later. Supported host baseline: pi 0.87.1 or later, or
-omp 18.4.10 or later. Install with `pi install npm:jev-tools@0.1.1` or
-`omp plugin install jev-tools@0.1.1`. Omp uses its Bun runtime; Node.js is also
+omp 18.4.10 or later. Install with `pi install npm:@nomenak/jev-tools@0.1.1` or
+`omp plugin install @nomenak/jev-tools@0.1.1`. Omp uses its Bun runtime; Node.js is also
 required for Node-based project checks. These are support baselines, not the first
 host releases to implement package installation. Later host versions are expected
 to remain compatible but are not all individually validated. Optional native

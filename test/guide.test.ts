@@ -1,17 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Guide } from "../src/guide.ts";
 import { detectHost } from "../src/host.ts";
-
-const rule = readFileSync(
-  new URL("../rules/jev-ask.md", import.meta.url),
-  "utf8",
-);
-const body = rule.split("---")[2];
-assert.ok(body);
-const policy = body.trim();
 
 function fakeHost() {
   const handlers = new Map<string, (event: unknown) => unknown>();
@@ -49,7 +40,7 @@ test("omp delivers once, then redelivers after compaction", () => {
   guide.deliver(ctx);
   assert.deepEqual(delivered, [guide.text, guide.text]);
 });
-test("pi refreshes guide and policy independently as active tools change", () => {
+test("pi refreshes the guide as active tools change", () => {
   const host = fakeHost();
   const guide = new Guide(detectHost({}));
   guide.attach(host.api);
@@ -64,7 +55,6 @@ test("pi refreshes guide and policy independently as active tools change", () =>
   assert.deepEqual(event.systemPromptOptions.sections, {
     other: "kept",
     jev_guide: guide.text,
-    jev_policy: policy,
   });
   event.systemPromptOptions.selectedTools = ["jev_find_files"];
   host.emit("session_compact");
