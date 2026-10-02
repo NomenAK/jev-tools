@@ -18,4 +18,6 @@ Report repository-confinement escapes in file evidence collection, including rea
 
 File evidence collection is confined to the repository, but optional commands are not sandboxed: they run with the host's permissions and may read or modify files or access the network. `JEV_TOOLS_ALLOW_COMMAND=0` disables this command path. Selected repository evidence and requested command output are sent to the configured API endpoint; automatic secret redaction is not promised. Review the data and endpoint before use.
 
+Saved interactive configuration stores the API key in plaintext in a private user-level file (`~/.config/jev-agent-tools/config.json` by default). Protect the account and back-ups accordingly, or use environment variables from a secret manager instead.
+
 Expected execution of an explicitly supplied command, intentional submission of evidence, inaccurate judgments, and ordinary bugs or feature requests are not by themselves security vulnerabilities. Report ordinary product problems through issues; report host or API-service vulnerabilities to their respective maintainers. If unsure about a jev-tools security impact, use the private form.

@@ -67,12 +67,8 @@ export const askParameters = Type.Object(
 );
 export type AskArgs = Static<typeof askParameters>;
 
-export function createAskTool({
-  client,
-  host,
-  runtime,
-  exec: execute,
-}: ToolDependencies) {
+export function createAskTool(dependencies: ToolDependencies) {
+  const { host, runtime, exec: execute } = dependencies;
   const { isOmp, names } = host;
   const allowCommand = process.env.JEV_TOOLS_ALLOW_COMMAND !== "0";
   const parameters = allowCommand
@@ -120,6 +116,7 @@ export function createAskTool({
         };
       };
     }> {
+      const client = dependencies.client;
       const started = performance.now();
       const exec = shareGitInventory(execute);
       const finish = (

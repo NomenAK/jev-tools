@@ -104,12 +104,8 @@ function makeCandidate(
   };
 }
 
-export function createSelectTestsTool({
-  client,
-  host,
-  runtime,
-  exec: execute,
-}: ToolDependencies) {
+export function createSelectTestsTool(dependencies: ToolDependencies) {
+  const { host, runtime, exec: execute } = dependencies;
   return {
     name: "jev_select_tests",
     label: "Jev select tests",
@@ -128,6 +124,7 @@ export function createSelectTestsTool({
       _update: unknown,
       ctx: { cwd: string } & GuideContext,
     ) {
+      const client = dependencies.client;
       const started = performance.now();
       const exec = shareGitInventory(execute);
       const totals = {

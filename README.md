@@ -24,7 +24,29 @@ omp plugin install jev-agent-tools@0.1.3
 
 Requires Node.js 24 or later. Supported host baselines are pi 0.87.1 and omp 18.4.10. These are support baselines, not claims that every later version has been individually validated. omp uses its Bun runtime; Node.js is also required for Node-based project checks. Git and, for optional command evidence, Bash must be available. Optional native parsers and file-search acceleration may be unavailable on some platforms; affected tools report their limitations.
 
+The published `jev-agent-tools@0.1.3` package was also checked with **pi 1.0.0** on Linux under Node.js 24.15.0: npm installation, TypeScript checking against the host types, all six tools in the actual CLI, and reading-guide injection passed. The CLI smoke used a simulated conversation provider and Jev endpoint; it verifies host integration, not live model accuracy or every tool scenario.
+
+**pi 1.0.0 packaging warning:** this release declares `@sinclair/typebox` in `dependencies`, while pi expects host-provided extension modules in `peerDependencies` with a `"*"` range. pi warns that separately installed copies can create duplicate runtime modules. The warning did not prevent the smoke from completing; it remains a packaging issue, not a claim of warning-free compatibility.
+
 ## Configure
+
+### Interactive setup
+
+In the main interactive terminal of pi or omp, a first launch without configuration offers **Configure now / Later**. Run `/jev-setup` at any time to change the endpoint, model or key. The key is typed in a masked field and is never passed as a command-line argument. Choose **This session only** (nothing is written) or **Save for future sessions**. Cancelling at any step changes nothing.
+
+| Flag | Effect |
+|---|---|
+| `--jev-skip-setup` | Suppress the first-launch offer for this run; `/jev-setup` still works. |
+| `--jev-url <url>` | Endpoint for this run. |
+| `--jev-model <name>` | Jev model for this run, not the conversation model. |
+
+No dialog appears in print, JSON or RPC modes, or in sub-agents; configure those with the environment variables below. Changes apply immediately, without restarting the host.
+
+**Precedence per field:** environment variable, then launch flag, then this session's setup, then saved configuration, then the default model `openjev`. A field set by the environment or a flag is shown as controlled and is never saved.
+
+**Saved configuration** lives outside the repository at `$XDG_CONFIG_HOME/jev-agent-tools/config.json` (default `~/.config/jev-agent-tools/config.json`), in a private directory (`0700`) with a private file (`0600`). **The key is stored in plaintext, not encrypted.** Storage that is a symlink, group/world-accessible, not owned by you or malformed is refused rather than overwritten.
+
+### Environment variables
 
 Set these before starting the host, using your own endpoint and credentials:
 
@@ -35,7 +57,7 @@ export JEV_TOOLS_API_KEY="${YOUR_JEV_API_KEY}"
 export JEV_TOOLS_MODEL="openjev"
 ```
 
-`YOUR_*` placeholders are inputs you supply, not additional product settings. Configuration is read when the extension loads; restart the host after changing it.
+`YOUR_*` placeholders are inputs you supply, not additional product settings. Environment variables are read when the extension loads and take precedence over everything else.
 
 | Variable | Meaning |
 |---|---|
