@@ -85,7 +85,7 @@ Commands are captured in private temporary files and cleaned up. Captured stream
 
 ## Host differences
 
-omp assigns read approval without `command` and execution approval with it. pi does not add per-tool execution approval: the command has the shell's ordinary permissions. Both hosts receive shared reading guidance; the pi prompt hook supplies decision policy while `jev_ask` is active, whereas omp discovers enabled package rules normally. Forced prompt overrides or disabled rules can bypass guidance.
+omp assigns read approval without `command` and execution approval with it. pi does not add per-tool execution approval: the command has the shell's ordinary permissions. Both hosts receive shared reading guidance; in pi the decision policy is part of this tool's guidelines while `jev_ask` is active, whereas omp discovers enabled package rules normally. Forced prompt overrides or disabled rules can bypass guidance.
 
 ## Related tools
 
