@@ -32,6 +32,10 @@ modules are not a stable library API.
 
 ### Fixed
 
+- In omp, first-launch Jev setup no longer waits for credential entry inside the
+  bounded `session_start` handler. The offer and input dialogs stay open while
+  users find their endpoint and key, rather than closing after the host's
+  30-second event deadline.
 - `JEV_TOOLS_MAX_USD` could be overshot by up to seven requests: concurrent batches
   were all admitted before any cost was reported. Under a USD limit, requests are
   now admitted one at a time, so only the final admitted request can exceed it.

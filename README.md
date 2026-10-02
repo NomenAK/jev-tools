@@ -69,6 +69,8 @@ In the main interactive terminal of pi or omp, a first launch without configurat
 
 No dialog appears in print, JSON or RPC modes, or in sub-agents; configure those with the environment variables below. Changes apply immediately, without restarting the host.
 
+Interactive setup waits for submission or cancellation, without a credential-entry timeout. The first-launch offer does not keep the host's startup event handler open while you find the endpoint or key.
+
 **Precedence per field:** environment variable, then launch flag, then this session's setup, then saved configuration, then the default model `openjev`. A field set by the environment or a flag is shown as controlled and is never saved.
 
 **Saved configuration** lives outside the repository at `$XDG_CONFIG_HOME/jev-agent-tools/config.json` (default `~/.config/jev-agent-tools/config.json`), in a private directory (`0700`) with a private file (`0600`). On Windows, where mode bits do not exist, privacy is the folder's access list: saving restricts it to you, SYSTEM and Administrators, and loading refuses any other account with access. **The key is stored in plaintext, not encrypted.** Storage that is a symlink, accessible to other users, not owned by you or malformed is refused rather than overwritten. The MCP server also reads this file, after environment variables.
