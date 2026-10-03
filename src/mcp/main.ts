@@ -3,6 +3,7 @@ import { readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { canonicalPath } from "../adapters/canonical-path.ts";
+import { MCP_SHUTDOWN_FLUSH_TIMEOUT_MS } from "../constants.ts";
 import { type JsonRpcResponse, McpServer, PARSE_ERROR } from "./protocol.ts";
 import { createMcpTools } from "./tools.ts";
 
@@ -65,16 +66,39 @@ async function main(): Promise<void> {
   process.stderr.write(
     `jev-agent-tools MCP server ready (root ${root}; ${configured ? "endpoint configured" : "no endpoint: set JEV_TOOLS_URL and JEV_TOOLS_API_KEY, or save them with /jev-setup in pi or omp"})\n`,
   );
+  let closing = false;
   const send = (response: JsonRpcResponse | JsonRpcResponse[] | undefined) => {
-    if (response === undefined || (Array.isArray(response) && !response.length))
+    if (
+      closing ||
+      response === undefined ||
+      (Array.isArray(response) && !response.length)
+    )
       return;
     // Newline-delimited JSON; JSON.stringify never emits raw newlines.
     process.stdout.write(`${JSON.stringify(response)}\n`);
   };
   const pending = new Set<Promise<void>>();
   const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
+  const shutdown = async (code: number) => {
+    if (closing) return;
+    closing = true;
+    lines.close();
+    process.stdin.destroy();
+    server.abortAll();
+    // Tool promises include bounded process-tree escalation. Do not exit when
+    // only the direct shell has closed: descendants may still need SIGKILL.
+    await Promise.allSettled(pending);
+    if (process.stdout.destroyed) process.exit(code);
+    // A client may leave its stdout pipe open without draining it. Cleanup
+    // is already complete; never let that client's backpressure hold us alive.
+    setTimeout(() => process.exit(code), MCP_SHUTDOWN_FLUSH_TIMEOUT_MS);
+    process.stdout.end(() => process.exit(code));
+  };
+  process.on("SIGTERM", () => void shutdown(143));
+  process.on("SIGINT", () => void shutdown(130));
+  process.stdout.on("error", () => void shutdown(1));
   lines.on("line", (line) => {
-    if (!line.trim()) return;
+    if (closing || !line.trim()) return;
     let message: unknown;
     try {
       message = JSON.parse(line);
@@ -100,12 +124,7 @@ async function main(): Promise<void> {
     pending.add(work);
     void work.finally(() => pending.delete(work));
   });
-  lines.on("close", async () => {
-    // The client closed stdin: stop running tools, flush answers, exit.
-    server.abortAll();
-    await Promise.allSettled(pending);
-    process.stdout.write("", () => process.exit(0));
-  });
+  lines.on("close", () => void shutdown(0));
 }
 
 main().catch((error: unknown) => {

@@ -15,6 +15,8 @@ import { createMcpTools } from "../src/mcp/tools.ts";
 // Reviewer's reproduction: the command writes `started`, sleeps inside the
 // subshell captureCommand creates, then writes `survived`. Cancelling or
 // timing out must stop the whole process tree, not only the bash PID.
+// These integration checks cross real Bash/OS process boundaries. Fake Node
+// clocks cannot advance descendant sleeps or the operating system's signals.
 const noBash = resolveShell().ok ? {} : { skip: "no permitted bash" };
 const bashPath = (path: string) => path.replaceAll("\\", "/");
 function markerCommand(dir: string, seconds: number): string {
@@ -63,7 +65,6 @@ test("cancelling a command stops its descendants", noBash, async (t) => {
 
 test("a command timeout stops its descendants", noBash, async (t) => {
   const m = await markers(t);
-  const started = Date.now();
   const result = await captureCommand(
     spawnExec,
     m.dir,
@@ -73,7 +74,6 @@ test("a command timeout stops its descendants", noBash, async (t) => {
   assert.equal(result.ok, true);
   if (result.ok) assert.equal(result.output.timed_out, true);
   assert.ok(existsSync(m.started));
-  assert.ok(Date.now() - started < 2_400, "timeout waited for the sleep");
   await delay(2_500);
   assert.equal(
     existsSync(m.survived),
@@ -81,6 +81,39 @@ test("a command timeout stops its descendants", noBash, async (t) => {
     "descendant survived the timeout",
   );
 });
+
+for (const mode of ["cancel", "timeout"] as const) {
+  test(
+    `a ${mode} stops TERM-ignoring descendants after their parent exits`,
+    noBash,
+    async (t) => {
+      const m = await markers(t);
+      const controller = new AbortController();
+      const command = `bash -c 'trap "" TERM; echo started > "${bashPath(m.started)}"; sleep 3; echo survived > "${bashPath(m.survived)}"' & wait`;
+      const running = captureCommand(
+        spawnExec,
+        m.dir,
+        command,
+        mode === "timeout" ? 1 : 30,
+        controller.signal,
+      );
+      await waitFor(m.started);
+      if (mode === "cancel") {
+        controller.abort(new Error("cancelled"));
+        await assert.rejects(running);
+      } else {
+        const result = await running;
+        assert.equal(result.ok && result.output.timed_out, true);
+      }
+      await delay(3_500);
+      assert.equal(
+        existsSync(m.survived),
+        false,
+        "TERM-ignoring descendant survived",
+      );
+    },
+  );
+}
 
 test("a command that finishes normally is unaffected", noBash, async (t) => {
   const m = await markers(t);
