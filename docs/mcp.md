@@ -10,7 +10,7 @@ Setup takes three steps: provide the endpoint and key, register the server with 
 - Bash for optional `jev_ask` command evidence. On Windows this is Git for Windows bash, found automatically next to `git` or under Program Files; set `JEV_TOOLS_BASH` to use another. The WSL `bash.exe` launchers are never used.
 - A Jev endpoint URL and API key.
 
-The server is available from the first release after 0.1.4. Until then, use a clone (see [From a clone](#from-a-clone)).
+The server ships in `jev-agent-tools` version 0.2.0 and later. For a development checkout, see [From a clone](#from-a-clone).
 
 ## 2. Provide the endpoint and key
 

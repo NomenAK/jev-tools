@@ -9,6 +9,8 @@ modules are not a stable library API.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-03
+
 ### Added
 
 - `jev-agent-tools-mcp`: a dependency-free MCP stdio server exposing the same six
@@ -140,7 +142,8 @@ Tagged but never published to npm: the unscoped package name was rejected.
 
 Tagged but never published to npm: the publish workflow failed before upload.
 
-[Unreleased]: https://github.com/NomenAK/jev-tools/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/NomenAK/jev-tools/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/NomenAK/jev-tools/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/NomenAK/jev-tools/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/NomenAK/jev-tools/compare/v0.1.0...v0.1.3
 [0.1.2]: https://github.com/NomenAK/jev-tools/tree/v0.1.2

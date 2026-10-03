@@ -13,20 +13,20 @@ Install through your host's package manager, or register the MCP server with an 
 ### pi
 
 ```sh
-pi install npm:jev-agent-tools@0.1.4
+pi install npm:jev-agent-tools@0.2.0
 # Project-local installation:
-pi install -l npm:jev-agent-tools@0.1.4
+pi install -l npm:jev-agent-tools@0.2.0
 ```
 
 ### omp
 
 ```sh
-omp plugin install jev-agent-tools@0.1.4
+omp plugin install jev-agent-tools@0.2.0
 ```
 
 ### Any MCP client
 
-The package also ships `jev-agent-tools-mcp`, a stdio MCP server that exposes the same six tools to any MCP client: Claude Code, Claude Desktop, Kiro, Cursor, VS Code, Codex CLI and others. It is available from the first release after 0.1.4. A typical `mcpServers` entry:
+Since version 0.2.0, the package also ships `jev-agent-tools-mcp`, a stdio MCP server that exposes the same six tools to any MCP client: Claude Code, Claude Desktop, Kiro, Cursor, VS Code, Codex CLI and others. A typical `mcpServers` entry:
 
 ```json
 {
