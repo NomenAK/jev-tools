@@ -16,7 +16,7 @@ const child = spawn(
   [
     ...shell.prefix,
     "-c",
-    `bash -c 'trap "" TERM; echo "$BASHPID $PPID" > "${started}"; sleep 6; echo survived > "${survived.replaceAll("\\", "/")}"' & wait`,
+    `bash -c 'trap "" TERM; echo "$BASHPID $PPID" > "${started}"; sleep 30; echo survived > "${survived.replaceAll("\\", "/")}"' & wait`,
   ],
   { stdio: ["ignore", "pipe", "pipe"] },
 );
@@ -33,6 +33,12 @@ try {
       child.pid +
       " bash=" +
       (await readFile(started, "utf8")),
+  );
+  console.log(
+    "[DEBUG-native-tree] msys " +
+      execFileSync(shell.executable, ["-c", "ps -e; ps -W"], {
+        encoding: "utf8",
+      }),
   );
   const system = process.env.SystemRoot ?? "C:\\Windows";
   const powershell = join(
@@ -64,7 +70,7 @@ try {
         encoding: "utf8",
       }),
   );
-  await delay(6_500);
+  await delay(30_500);
   console.log(`[DEBUG-native-tree] survived=${existsSync(survived)}`);
 } finally {
   child.kill("SIGKILL");

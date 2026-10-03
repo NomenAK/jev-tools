@@ -16,6 +16,7 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
+import { canonicalPath } from "../src/adapters/canonical-path.ts";
 import { windowsStorage } from "../src/adapters/private-storage.ts";
 import { ConfigController } from "../src/configuration.ts";
 import type { JevClient } from "../src/jev/types.ts";
@@ -38,7 +39,11 @@ async function isPrivate(path: string, mode: number): Promise<boolean> {
 }
 
 async function fixture(t: TestContext) {
-  const root = await mkdtemp(join(tmpdir(), "jev-configuration-"));
+  // Canonicalize tmpdir first: on macOS it holds a /var alias whose ancestor
+  // symlink the storage check must otherwise reject.
+  const root = await mkdtemp(
+    join(await canonicalPath(tmpdir()), "jev-configuration-"),
+  );
   t.after(() => rm(root, { recursive: true, force: true }));
   const directory = join(root, "config");
   const requests: { authorization: string | undefined; model: unknown }[] = [];

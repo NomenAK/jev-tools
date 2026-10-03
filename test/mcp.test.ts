@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { realpathSync } from "node:fs";
 import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -48,8 +49,14 @@ const yesClient: JevClient = {
     };
   },
 };
+// macOS tmpdir() holds a /var alias that the storage check rejects as an
+// ancestor symlink, so resolve it before building any fixture below it.
+const canonicalTmpdir = realpathSync.native(tmpdir());
 // Never read the developer's real ~/.config/jev-agent-tools during tests.
-const isolatedConfig = join(tmpdir(), `jev-mcp-no-config-${process.pid}`);
+const isolatedConfig = join(
+  canonicalTmpdir,
+  `jev-mcp-no-config-${process.pid}`,
+);
 async function server(
   client: JevClient | undefined,
   env: NodeJS.ProcessEnv = {},
@@ -429,7 +436,8 @@ test("cancelling an unknown or finished request changes nothing", async () => {
 });
 
 test("MCP uses configuration saved by /jev-setup and survives unusable storage", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "jev-mcp-config-"));
+  // canonicalTmpdir (defined above) keeps the storage check from seeing the macOS /var alias.
+  const directory = await mkdtemp(join(canonicalTmpdir, "jev-mcp-config-"));
   t.after(() => rm(directory, { recursive: true, force: true }));
   await chmod(directory, 0o700);
   // mkdtemp's mode is ignored on Windows; restrict the ACL like a real save.
