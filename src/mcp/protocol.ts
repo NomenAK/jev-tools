@@ -142,7 +142,12 @@ export class McpServer {
           return this.result(id, {
             supportedVersions: [...SUPPORTED_VERSIONS],
             capabilities: { tools: { listChanged: false } },
-            serverInfo: { name: this.info.name, version: this.info.version },
+            _meta: {
+              "io.modelcontextprotocol/serverInfo": {
+                name: this.info.name,
+                version: this.info.version,
+              },
+            },
             ...(this.info.instructions
               ? { instructions: this.info.instructions }
               : {}),
@@ -156,6 +161,11 @@ export class McpServer {
             tools: [...this.tools.values()].map(
               ({ call: _call, ...tool }) => tool,
             ),
+            // CacheableResult requires these from 2026-07-28; 0/private is
+            // conservative (immediately stale, same authorization context)
+            // and ignored by earlier clients via the open result shape.
+            ttlMs: 0,
+            cacheScope: "private",
           });
         case "tools/call":
           return await this.callTool(id, params);

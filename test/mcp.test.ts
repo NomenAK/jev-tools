@@ -11,6 +11,7 @@ import { windowsStorage } from "../src/adapters/private-storage.ts";
 import type { JevClient } from "../src/jev/types.ts";
 import {
   INVALID_PARAMS,
+  INVALID_REQUEST,
   McpServer,
   METHOD_NOT_FOUND,
   UNSUPPORTED_PROTOCOL_VERSION,
@@ -125,6 +126,166 @@ test("tools/list exposes the six tools with JSON object schemas", async () => {
   }
   assert.equal(tools[0]?.annotations.readOnlyHint, false);
   assert.equal(tools[1]?.annotations.readOnlyHint, true);
+});
+test("tools/list advertises conservative caching", async () => {
+  const mcp = await server(undefined);
+  const modernMeta = {
+    "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+    "io.modelcontextprotocol/clientCapabilities": {},
+  };
+  const listed = await mcp.handle(
+    request(1, "tools/list", { _meta: modernMeta }),
+  );
+  assert.ok(listed && "result" in listed);
+  assert.equal(listed.result.resultType, "complete");
+  assert.equal(listed.result.ttlMs, 0);
+  assert.equal(listed.result.cacheScope, "private");
+  const tools = listed.result.tools;
+  if (!Array.isArray(tools)) assert.fail("expected a tools array");
+  assert.equal(tools.length, 6);
+  const legacy = await mcp.handle(request(2, "tools/list"));
+  assert.ok(legacy && "result" in legacy);
+  assert.equal(legacy.result.ttlMs, 0);
+  assert.equal(legacy.result.cacheScope, "private");
+});
+
+test("server/discover carries server identity in result _meta", async () => {
+  const mcp = await server(undefined);
+  const discovered = await mcp.handle(
+    request(1, "server/discover", {
+      _meta: {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {},
+      },
+    }),
+  );
+  assert.ok(discovered && "result" in discovered);
+  const versions = discovered.result.supportedVersions;
+  if (!Array.isArray(versions))
+    assert.fail("expected a supported versions array");
+  assert.deepEqual([...versions].sort(), [
+    "2024-11-05",
+    "2025-03-26",
+    "2025-06-18",
+    "2025-11-25",
+    "2026-07-28",
+  ]);
+  assert.equal(discovered.result.ttlMs, 0);
+  assert.equal(discovered.result.cacheScope, "private");
+  const meta = discovered.result._meta;
+  if (
+    !meta ||
+    typeof meta !== "object" ||
+    !("io.modelcontextprotocol/serverInfo" in meta)
+  )
+    assert.fail("expected serverInfo in discover _meta");
+  const serverInfo = meta["io.modelcontextprotocol/serverInfo"];
+  if (
+    !serverInfo ||
+    typeof serverInfo !== "object" ||
+    !("name" in serverInfo) ||
+    !("version" in serverInfo)
+  )
+    assert.fail("expected server name and version");
+  assert.equal(serverInfo.name, "t");
+  assert.equal(serverInfo.version, "1");
+});
+
+test("initialize echoes legacy versions and negotiates the modern one down", async () => {
+  const mcp = await server(undefined);
+  let nextId = 1;
+  for (const version of [
+    "2024-11-05",
+    "2025-03-26",
+    "2025-06-18",
+    "2025-11-25",
+  ] as const) {
+    const echoed = await mcp.handle(
+      request(nextId++, "initialize", {
+        protocolVersion: version,
+        capabilities: {},
+        clientInfo: { name: "probe", version: "1" },
+      }),
+    );
+    assert.ok(echoed && "result" in echoed);
+    assert.equal(echoed.result.protocolVersion, version);
+  }
+  for (const version of ["2026-07-28", "1999-01-01"] as const) {
+    const fallback = await mcp.handle(
+      request(nextId++, "initialize", {
+        protocolVersion: version,
+        capabilities: {},
+        clientInfo: { name: "probe", version: "1" },
+      }),
+    );
+    assert.ok(fallback && "result" in fallback);
+    assert.equal(fallback.result.protocolVersion, "2025-11-25");
+  }
+});
+
+test("modern unsupported versions and malformed requests are protocol errors", async () => {
+  const mcp = await server(undefined);
+  let nextId = 1;
+  for (const method of [
+    "tools/list",
+    "tools/call",
+    "server/discover",
+  ] as const) {
+    const refused = await mcp.handle(
+      request(nextId++, method, {
+        ...(method === "tools/call" ? { name: "jev_ask", arguments: ask } : {}),
+        _meta: { "io.modelcontextprotocol/protocolVersion": "2099-01-01" },
+      }),
+    );
+    assert.ok(refused && "error" in refused);
+    assert.equal(refused.error.code, UNSUPPORTED_PROTOCOL_VERSION);
+    const data = refused.error.data;
+    if (
+      !data ||
+      typeof data !== "object" ||
+      !("supported" in data) ||
+      !("requested" in data)
+    )
+      assert.fail("expected supported/requested error data");
+    if (!Array.isArray(data.supported))
+      assert.fail("expected a supported versions array");
+    assert.ok(data.supported.includes("2026-07-28"));
+    assert.equal(data.requested, "2099-01-01");
+  }
+  const wrongEnvelope = await mcp.handle({
+    jsonrpc: "1.0",
+    id: nextId++,
+    method: "tools/list",
+    params: {},
+  });
+  assert.ok(wrongEnvelope && "error" in wrongEnvelope);
+  assert.equal(wrongEnvelope.error.code, INVALID_REQUEST);
+  const missingMethod = await mcp.handle({
+    jsonrpc: "2.0",
+    id: nextId++,
+    params: {},
+  });
+  assert.ok(missingMethod && "error" in missingMethod);
+  assert.equal(missingMethod.error.code, INVALID_REQUEST);
+  const nullId = await mcp.handle({
+    jsonrpc: "2.0",
+    id: null,
+    method: "tools/list",
+    params: {},
+  });
+  assert.ok(nullId && "error" in nullId);
+  assert.equal(nullId.error.code, INVALID_REQUEST);
+  assert.equal(nullId.id, null);
+  const arrayArguments = await mcp.handle(
+    request(nextId++, "tools/call", { name: "jev_ask", arguments: [] }),
+  );
+  assert.ok(arrayArguments && "error" in arrayArguments);
+  assert.equal(arrayArguments.error.code, INVALID_PARAMS);
+  const unknownTool = await mcp.handle(
+    request(nextId++, "tools/call", { name: "nope", arguments: {} }),
+  );
+  assert.ok(unknownTool && "error" in unknownTool);
+  assert.equal(unknownTool.error.code, INVALID_PARAMS);
 });
 
 test("JEV_TOOLS_ALLOW_COMMAND=0 removes command from the MCP schema", async () => {
