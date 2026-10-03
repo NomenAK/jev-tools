@@ -2,6 +2,7 @@ import type { TSchema } from "@sinclair/typebox";
 import { Value } from "@sinclair/typebox/value";
 import { spawnExec } from "../adapters/exec.ts";
 import { ConfigController } from "../configuration.ts";
+import { MCP_VALIDATION_MAX_ERRORS } from "../constants.ts";
 import type { GitExec } from "../core/git.ts";
 import { Guide } from "../guide.ts";
 import { mcpHost } from "../host.ts";
@@ -45,9 +46,11 @@ export interface McpToolOptions {
 
 function validationError(schema: TSchema, value: unknown): string | undefined {
   if (Value.Check(schema, value)) return undefined;
-  const problems = [...Value.Errors(schema, value)]
-    .slice(0, 5)
-    .map((error) => `${error.path || "/"}: ${error.message}`);
+  const problems: string[] = [];
+  for (const error of Value.Errors(schema, value)) {
+    problems.push(`${error.path || "/"}: ${error.message}`);
+    if (problems.length === MCP_VALIDATION_MAX_ERRORS) break;
+  }
   return `Invalid arguments. ${problems.join("; ")}`;
 }
 

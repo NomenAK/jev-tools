@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import type { Stats } from "node:fs";
 import { join } from "node:path";
+import { PRIVATE_STORAGE_TIMEOUT_MS } from "../constants.ts";
 
 /**
  * Owner-only storage, checked with each operating system's own model.
@@ -94,22 +95,22 @@ function powershell(
   const childEnv: NodeJS.ProcessEnv = { ...process.env, ...env };
   for (const key of Object.keys(childEnv))
     if (key.toLowerCase() === "psmodulepath") delete childEnv[key];
-  return new Promise((resolve, reject) => {
-    execFile(
-      executable,
-      [
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "Bypass",
-        // UTF-16LE base64 runs the script as one unit; stdin runs line by line.
-        "-EncodedCommand",
-        Buffer.from(script, "utf16le").toString("base64"),
-      ],
-      { env: childEnv, windowsHide: true, timeout: 20_000 },
-      (error, stdout) => (error ? reject(error) : resolve(stdout)),
-    );
-  });
+  const { promise, resolve, reject } = Promise.withResolvers<string>();
+  execFile(
+    executable,
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      // UTF-16LE base64 runs the script as one unit; stdin runs line by line.
+      "-EncodedCommand",
+      Buffer.from(script, "utf16le").toString("base64"),
+    ],
+    { env: childEnv, windowsHide: true, timeout: PRIVATE_STORAGE_TIMEOUT_MS },
+    (error, stdout) => (error ? reject(error) : resolve(stdout)),
+  );
+  return promise;
 }
 
 export const windowsStorage: PrivateStorage = {

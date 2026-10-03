@@ -211,8 +211,9 @@ Then use `"command": "node"` with `"args": ["/absolute/path/to/jev-tools/dist/mc
 - **Approval is the client's.** `jev_ask` is annotated as not read-only and potentially destructive while it accepts `command`; the other five are read-only. All six are open-world because evidence goes to your endpoint. `JEV_TOOLS_ALLOW_COMMAND=0` removes `command` from the schema and makes `jev_ask` read-only.
 - **Instructions.** The reading guide and the `jev_ask` policy are sent as the server's `instructions`. Clients may ignore them, so also add the [agent instructions](agent-instructions.md) to the project.
 - **Tool names in descriptions** refer to "your text search tool" and "your file-name search tool" instead of pi or omp tool names.
-- **Protocol.** Versions 2024-11-05 through 2025-11-25 via `initialize`, 2026-07-28 via `server/discover`. Tools only; no resources, prompts or sampling. Cancelling a call aborts its Jev requests and command.
+- **Protocol.** Versions 2024-11-05 through 2025-11-25 via `initialize`, 2026-07-28 via `server/discover` and per-request `_meta`. Modern discovery supplies server identity in `_meta["io.modelcontextprotocol/serverInfo"]`; discovery and tool lists advertise `ttlMs: 0` and `cacheScope: "private"`, so clients must not share them across authorization contexts. Tools only; no resources, prompts or sampling. Cancelling a call aborts its Jev requests and command.
 - **One process, one session.** Limits, cache and counters last as long as the connection; restart the server to reset them.
+- **Command shutdown.** Cancellation, command timeout, stdin closure, SIGTERM and SIGINT wait for bounded command-tree termination. On POSIX the managed group receives SIGTERM, then SIGKILL after two seconds if it remains; on Windows the server waits for the system `taskkill /T /F` operation, bounded to five seconds. Cancelled calls receive no response. This is not a sandbox: descendants that deliberately detach from the managed group or escape the Windows tree are not tracked.
 
 ## Troubleshooting
 

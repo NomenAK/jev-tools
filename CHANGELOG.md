@@ -21,9 +21,14 @@ modules are not a stable library API.
 - MCP Registry publication: `server.json` (`io.github.NomenAK/jev-agent-tools`) and
   `mcpName` in `package.json`. After the npm publish, the release workflow waits for the
   approved version and its `mcpName` on npm, then publishes with a pinned, checksum-verified
-  `mcp-publisher` over GitHub OIDC; an existing registry version is skipped.
-- `scripts/check-mcp-package.ts`: CI and release gate that installs the packed tarball
-  and checks the server answers `initialize` and lists its six tools.
+  `mcp-publisher` over GitHub OIDC; an existing registry version is skipped only
+  when its server definition matches the approved tarball's metadata.
+- `scripts/check-mcp-package.ts`: CI and release gate that installs the packed
+  tarball, checks modern discovery and all advertised legacy handshakes, and
+  exercises `jev_ask` against a local synthetic HTTP endpoint.
+- Native Windows and macOS CI for MCP, managed process termination, private
+  configuration, platform paths and the installed package; Linux retains the
+  complete offline suite.
 
 ### Changed
 
@@ -31,6 +36,16 @@ modules are not a stable library API.
   documentation already linked to.
 
 ### Fixed
+
+- MCP command cancellation and timeout now finish process-group escalation even
+  when the parent shell exits first. Closing stdin, SIGTERM and SIGINT drain
+  outstanding tool calls before the server exits; cancelled calls stay silent.
+- Modern MCP discovery now includes server identity in result metadata, and
+  tool lists declare immediately stale, private caching as required by the
+  2026-07-28 protocol.
+- MCP Registry reruns skip only an identical server definition. Divergent,
+  malformed or inconclusive responses fail; registry metadata is checked
+  against `server.json` inside the approved tarball before lookup.
 
 - In omp, first-launch Jev setup no longer waits for credential entry inside the
   bounded `session_start` handler. The offer and input dialogs stay open while

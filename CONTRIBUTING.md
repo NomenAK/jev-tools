@@ -21,7 +21,7 @@ npm run lint
 npm test
 ```
 
-`npm run build` compiles only the MCP server into `dist/` (git-ignored); `npm pack` runs it automatically. To try the server against a checkout, see [From a clone](docs/mcp.md#from-a-clone). CI also packs the package and runs `node scripts/check-mcp-package.ts <tarball>`, which installs the tarball into an empty directory and checks that the server answers `initialize` and lists its six tools.
+`npm run build` compiles only the MCP server into `dist/` (git-ignored); `npm pack` runs it automatically. To try the server against a checkout, see [From a clone](docs/mcp.md#from-a-clone). CI packs the package and runs `node scripts/check-mcp-package.ts <tarball>`: it installs the tarball into an empty directory, checks modern discovery and all advertised legacy handshakes, lists the six tools with their schemas and caching fields, and runs `jev_ask` through a local synthetic HTTP endpoint. This verifies installed integration, not live model accuracy. Linux runs the full offline suite; native Windows and macOS jobs run targeted MCP, process, configuration and packaging checks.
 
 ## Releases
 
