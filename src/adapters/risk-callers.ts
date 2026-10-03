@@ -1,5 +1,5 @@
 import { type FileHandle, lstat } from "node:fs/promises";
-import { resolve } from "node:path";
+import { posix } from "node:path";
 import type { SgNode } from "@ast-grep/napi";
 import { CONCURRENCY, STATE_MAX_CHARS, TIMEOUT_MS } from "../constants.ts";
 import type { GitExec } from "../core/git.ts";
@@ -460,8 +460,10 @@ export async function collectRiskCallers(
                   typeof source.beforePath === "string"
                     ? source.beforePath
                     : source.path;
+                // Repository paths are always "/"-separated; the platform
+                // resolve would yield "C:\\src\\..." on Windows.
                 const basePath = specifier.startsWith(".")
-                  ? resolve("/", sourcePath, "..", specifier).slice(1)
+                  ? posix.resolve("/", sourcePath, "..", specifier).slice(1)
                   : specifier.replaceAll(".", "/");
                 const runtimeSource = basePath.replace(
                   /\.(js|jsx|mjs|cjs)$/,

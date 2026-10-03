@@ -48,6 +48,12 @@ export interface JudgmentOptions {
   witnesses?: readonly string[];
   cache?: boolean;
   beforeRequest?: (questionCount: number) => Result<object>;
+  /**
+   * Awaited before each admission check. Resolves to a release function when
+   * it reserved a slot (a session under a USD limit), which the client calls
+   * exactly once on every exit path; rejects if `signal` aborts while waiting.
+   */
+  awaitAdmission?: (signal?: AbortSignal) => Promise<(() => void) | undefined>;
   onUsage?: (usage: { inputTokens: number; costUsd: number }) => void;
 }
 export interface JevClient {

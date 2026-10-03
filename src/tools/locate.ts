@@ -1,5 +1,6 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "@sinclair/typebox";
+import { canonicalPath } from "../adapters/canonical-path.ts";
 import { shareGitInventory } from "../adapters/git-inventory.ts";
 import { readLocateFile, scanRange } from "../adapters/locate-file.ts";
 import { loadSyntaxParser } from "../adapters/syntax.ts";
@@ -74,6 +75,7 @@ export function createLocateTool(
       ctx: { cwd: string } & GuideContext,
     ) {
       const client = dependencies.client;
+      const cwd = await canonicalPath(ctx.cwd);
       const started = performance.now();
       const exec = shareGitInventory(execute);
       const results: Judgment[] = [];
@@ -118,7 +120,7 @@ export function createLocateTool(
           ),
         };
       };
-      const file = await readLocateFile(ctx.cwd, args.path, signal, exec);
+      const file = await readLocateFile(cwd, args.path, signal, exec);
       if (!file.ok) return finish({ refusal: file.error });
       if (file.bytes < LOCATE_MIN_KB * 1000)
         return finish({
@@ -182,6 +184,7 @@ export function createLocateTool(
             },
             {
               signal,
+              ...runtime.session.requestGate(),
               beforeRequest: (n) => runtime.session.admit(n),
               onUsage: (usage) => runtime.session.recordUsage(usage),
             },
@@ -270,13 +273,7 @@ export function createLocateTool(
           });
         }
         if (file.kind === "outline") {
-          const selected = await scanRange(
-            ctx.cwd,
-            args.path,
-            block,
-            signal,
-            exec,
-          );
+          const selected = await scanRange(cwd, args.path, block, signal, exec);
           if (!selected.ok) return finish({ refusal: selected.error });
           const lines = selected.text.split("\n");
           sections = sections

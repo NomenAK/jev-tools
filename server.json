@@ -1,0 +1,57 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.NomenAK/jev-agent-tools",
+  "title": "Jev agent tools",
+  "description": "Evidence-oriented code questions, diff review and test selection via a Jev endpoint.",
+  "version": "0.1.4",
+  "repository": {
+    "url": "https://github.com/NomenAK/jev-tools",
+    "source": "github"
+  },
+  "websiteUrl": "https://github.com/NomenAK/jev-tools/blob/main/docs/mcp.md",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "jev-agent-tools",
+      "version": "0.1.4",
+      "runtimeHint": "npx",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "named",
+          "name": "--root",
+          "description": "Repository directory the tools work in. Defaults to the directory the client starts the server in.",
+          "format": "filepath",
+          "isRequired": false
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "JEV_TOOLS_URL",
+          "description": "Complete endpoint URL compatible with the Jev API format.",
+          "isRequired": true
+        },
+        {
+          "name": "JEV_TOOLS_API_KEY",
+          "description": "Bearer credential for the endpoint.",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "JEV_TOOLS_MODEL",
+          "description": "Requested Jev model.",
+          "default": "openjev",
+          "isRequired": false
+        },
+        {
+          "name": "JEV_TOOLS_ALLOW_COMMAND",
+          "description": "Set to 0 to remove shell commands from jev_ask.",
+          "isRequired": false
+        }
+      ]
+    }
+  ]
+}

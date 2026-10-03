@@ -15,10 +15,17 @@ Use Node.js 24 or newer and npm. From a checkout, with development dependencies 
 ```sh
 npm ci --include=optional
 npm run typecheck
+npm run build
 npm run check:imports
 npm run lint
 npm test
 ```
+
+`npm run build` compiles only the MCP server into `dist/` (git-ignored); `npm pack` runs it automatically. To try the server against a checkout, see [From a clone](docs/mcp.md#from-a-clone). CI packs the package and runs `node scripts/check-mcp-package.ts <tarball>`: it installs the tarball into an empty directory, checks modern discovery and all advertised legacy handshakes, lists the six tools with their schemas and caching fields, and runs `jev_ask` through a local synthetic HTTP endpoint. This verifies installed integration, not live model accuracy. Linux runs the full offline suite; native Windows and macOS jobs run targeted MCP, process, configuration and packaging checks.
+
+## Releases
+
+Maintainers release by pushing a `vX.Y.Z` tag on reviewed `main`. Before tagging, set the same version in `package.json`, in both `version` fields of `server.json`, and in a `CHANGELOG.md` section; `test/server-json.test.ts` fails if they drift. [`publish.yml`](.github/workflows/publish.yml) then packs once, checks the packed MCP server, publishes the approved tarball to npm with trusted publishing, publishes `server.json` to the MCP Registry with GitHub OIDC, and creates a draft GitHub Release. Each publication step skips a version that already exists with the same content and fails on anything inconclusive.
 
 Keep optional native dependencies enabled for development. These checks make no Jev API calls and need no Jev key. Dependency installation may use the network. Some runner-identity tests skip when additional runners are unavailable locally; CI provisions those runners in [.github/workflows/ci.yml](.github/workflows/ci.yml).
 

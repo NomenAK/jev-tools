@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
-import { resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "@sinclair/typebox";
 import { createAnalysisContext } from "../adapters/analysis-context.ts";
 import { collectAskRepository, repositoryPath } from "../adapters/ask-proof.ts";
 import { collectProofSyntax } from "../adapters/ask-syntax.ts";
+import { canonicalPath } from "../adapters/canonical-path.ts";
 import { captureCommand } from "../adapters/command.ts";
 import { collectFiles } from "../adapters/files.ts";
 import { shareGitInventory } from "../adapters/git-inventory.ts";
@@ -117,6 +118,7 @@ export function createAskTool(dependencies: ToolDependencies) {
       };
     }> {
       const client = dependencies.client;
+      const cwd = await canonicalPath(ctx.cwd);
       const started = performance.now();
       const exec = shareGitInventory(execute);
       const finish = (
@@ -159,7 +161,7 @@ export function createAskTool(dependencies: ToolDependencies) {
         return textResult("Provide state, command or at least one path.");
       const asks = compileAsks(args.asks, { surface: "ask" });
       if (!asks.ok) return textResult(asks.error);
-      const files = await collectFiles(ctx.cwd, args.paths ?? [], signal, {
+      const files = await collectFiles(cwd, args.paths ?? [], signal, {
         exec,
         allowEmpty: true,
         skipInvalidUtf8: true,
@@ -178,12 +180,7 @@ export function createAskTool(dependencies: ToolDependencies) {
         fact,
         next: "Provide this file as UTF-8 text if the judgment needs it.",
       }));
-      let repository = await collectAskRepository(
-        exec,
-        ctx.cwd,
-        args.base,
-        signal,
-      );
+      let repository = await collectAskRepository(exec, cwd, args.base, signal);
       if (!repository.ok && args.base) return textResult(repository.error);
       if (!repository.ok)
         proofLimitations.push({
@@ -193,7 +190,7 @@ export function createAskTool(dependencies: ToolDependencies) {
       const command = args.command
         ? await captureCommand(
             exec,
-            repository.ok ? repository.root : ctx.cwd,
+            repository.ok ? repository.root : cwd,
             args.command,
             args.timeout_s,
             signal,
@@ -201,12 +198,7 @@ export function createAskTool(dependencies: ToolDependencies) {
         : undefined;
       if (command && !command.ok) return textResult(command.error);
       if (command?.ok) {
-        repository = await collectAskRepository(
-          exec,
-          ctx.cwd,
-          args.base,
-          signal,
-        );
+        repository = await collectAskRepository(exec, cwd, args.base, signal);
         if (!repository.ok && args.base) return textResult(repository.error);
       }
       const initialState = assembleState(args.state, files.files);
@@ -220,6 +212,17 @@ export function createAskTool(dependencies: ToolDependencies) {
         for (const target of command.targets) {
           if (target.path.startsWith(`${repository.root}/`))
             target.path = target.path.slice(repository.root.length + 1);
+          else if (isAbsolute(target.path)) {
+            // Windows reports C:/... or short 8.3 forms; compare canonically.
+            const local = relative(
+              repository.root,
+              await canonicalPath(target.path),
+            )
+              .split("\\")
+              .join("/");
+            if (local && !local.startsWith("../") && !isAbsolute(local))
+              target.path = local;
+          }
           let matches = [...repository.known].filter(
             (path) => path === target.path || path.endsWith(`/${target.path}`),
           );
@@ -252,7 +255,7 @@ export function createAskTool(dependencies: ToolDependencies) {
           }
           const path = matches[0];
           if (!path) continue;
-          const local = repositoryPath(ctx.cwd, repository.root, path);
+          const local = repositoryPath(cwd, repository.root, path);
           if (!Object.hasOwn(files.files, local)) {
             const added = await collectFiles(repository.root, [path], signal, {
               exec,
@@ -348,7 +351,7 @@ export function createAskTool(dependencies: ToolDependencies) {
       if (repository?.ok) {
         const canonical = Object.fromEntries(
           Object.entries(files.files).map(([path, text]) => [
-            repositoryPath(repository.root, ctx.cwd, path),
+            repositoryPath(repository.root, cwd, path),
             text,
           ]),
         );
@@ -370,7 +373,7 @@ export function createAskTool(dependencies: ToolDependencies) {
               const canonicalPath =
                 references.additions.find(
                   (addition) => addition.reference === path,
-                )?.path ?? repositoryPath(repository.root, ctx.cwd, path);
+                )?.path ?? repositoryPath(repository.root, cwd, path);
               return [path, before[canonicalPath] ?? null];
             }),
           );
@@ -512,11 +515,11 @@ export function createAskTool(dependencies: ToolDependencies) {
       const identities = files.identities.map((file) => {
         const content = inserted[file.requestedPath];
         const insertedPath = Object.keys(inserted).find(
-          (path) => resolve(ctx.cwd, path) === file.resolvedPath,
+          (path) => resolve(cwd, path) === file.resolvedPath,
         );
         return {
           ...file,
-          insertedPath: insertedPath ? resolve(ctx.cwd, insertedPath) : "",
+          insertedPath: insertedPath ? resolve(cwd, insertedPath) : "",
           content: typeof content === "string" ? content : "",
           insertedSha256: createHash("sha256")
             .update(typeof content === "string" ? content : "")
@@ -544,6 +547,7 @@ export function createAskTool(dependencies: ToolDependencies) {
       const options = {
         signal,
         cache: !args.command,
+        ...runtime.session.requestGate(),
         beforeRequest: (questionCount: number) => {
           if (args.max_calls !== undefined && sent >= args.max_calls) {
             refusal = {
@@ -787,14 +791,14 @@ export function createAskTool(dependencies: ToolDependencies) {
           const selectedPath = repository?.ok
             ? (references.additions.find(
                 (addition) => addition.reference === selected,
-              )?.path ?? repositoryPath(repository.root, ctx.cwd, selected))
+              )?.path ?? repositoryPath(repository.root, cwd, selected))
             : selected;
           const retained = (path: string) => {
             if (!repository?.ok) return path !== selected;
             return (
               (references.additions.find(
                 (addition) => addition.reference === path,
-              )?.path ?? repositoryPath(repository.root, ctx.cwd, path)) !==
+              )?.path ?? repositoryPath(repository.root, cwd, path)) !==
               selectedPath
             );
           };

@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { realpathSync } from "node:fs";
 import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 import { execCommand } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/exec.js";
 import { captureCommand } from "../src/adapters/command.ts";
 import type { GitExec } from "../src/core/git.ts";
@@ -12,6 +14,11 @@ import type { JevClient, State } from "../src/jev/types.ts";
 import { Session } from "../src/session.ts";
 import { createAskTool } from "../src/tools/ask.ts";
 
+const windows = process.platform === "win32";
+// Windows has no POSIX signals: process.kill(pid, "SIGTERM") exits with 1.
+const posixSignals = windows
+  ? { skip: "POSIX signal exit codes do not exist on Windows" }
+  : {};
 for (const mode of ["failure", "timeout", "missing"] as const)
   test(`command ${mode} is evidence rather than a successful exit`, async () => {
     let paths: string[] = [];
@@ -81,14 +88,19 @@ for (const mode of ["failure", "timeout", "missing"] as const)
 test("real host bash capture preserves CI cwd stdout stderr and failed exit", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "jev-command-test-"));
   try {
+    // Git for Windows bash reports $PWD as /c/...; cygpath -w gives C:\...
+    const pwd = windows ? '"$(cygpath -w "$PWD")"' : '"$PWD"';
     const output = await captureCommand(
       (binary, args, options) => execCommand(binary, args, cwd, options),
       cwd,
-      "printf '%s\\n' \"$CI\" \"$PWD\"; printf 'failure\\n' >&2; exit 7",
+      `printf '%s\\n' "$CI" ${pwd}; printf 'failure\\n' >&2; exit 7`,
     );
     assert.equal(output.ok, true);
     if (!output.ok) return;
-    assert.equal(output.output.stdout, `1\n${cwd}\n`);
+    const [ci, reported] = output.output.stdout.split("\n");
+    assert.equal(ci, "1");
+    assert.equal(realpathSync.native(reported ?? ""), realpathSync.native(cwd));
+    assert.equal(output.output.stdout, `${ci}\n${reported}\n`);
     assert.equal(output.output.stderr, "failure\n");
     assert.equal(output.output.exit_code, 7);
   } finally {
@@ -335,16 +347,20 @@ test("abort during execution propagates without judgment and cleans capture", as
   );
   for (const path of paths) await assert.rejects(access(path));
 });
-test("signal death is rendered as failed exit instead of success", async () => {
-  const cwd = process.cwd();
-  const result = await captureCommand(
-    (binary, args, options) => execCommand(binary, args, cwd, options),
-    cwd,
-    "node -e 'process.kill(process.pid, \"SIGTERM\")'",
-  );
-  assert.equal(result.ok, true);
-  if (result.ok) assert.equal(result.output.exit_code, 143);
-});
+test(
+  "signal death is rendered as failed exit instead of success",
+  posixSignals,
+  async () => {
+    const cwd = process.cwd();
+    const result = await captureCommand(
+      (binary, args, options) => execCommand(binary, args, cwd, options),
+      cwd,
+      "node -e 'process.kill(process.pid, \"SIGTERM\")'",
+    );
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.output.exit_code, 143);
+  },
+);
 test("bounded physical lines preserve Unicode and following diagnostics", async () => {
   const result = await captureCommand(
     async (_binary, args) => {
@@ -418,7 +434,7 @@ for (const runner of ["node-relative", "node-absolute", "jest", "pytest", "go"])
             ? `FAILED ${path}::TestBill::test_total[param with space] - AssertionError`
             : runner === "jest"
               ? `FAIL ${path}\nAssertionError: expected 5`
-              : `✖ bill\n  test at ${runner === "node-absolute" ? `file://${cwd}/${path}` : path}:3:1\nAssertionError: expected 5`;
+              : `✖ bill\n  test at ${runner === "node-absolute" ? pathToFileURL(join(cwd, path)).href : path}:3:1\nAssertionError: expected 5`;
       let observed: State | undefined;
       const client: JevClient = {
         clearCache() {},
@@ -545,7 +561,7 @@ test("a test-at line printed by a passing test is not a failure target", async (
     ["real.test.mjs"],
   );
 });
-test("explicit exec signal retains its failed exit", async () => {
+test("explicit exec signal retains its failed exit", posixSignals, async () => {
   const result = await captureCommand(
     (binary, args, options) =>
       execCommand(binary, args, process.cwd(), options),

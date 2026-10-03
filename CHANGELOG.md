@@ -9,12 +9,71 @@ modules are not a stable library API.
 
 ## [Unreleased]
 
+### Added
+
+- `jev-agent-tools-mcp`: a dependency-free MCP stdio server exposing the same six
+  tools to any MCP client. It reuses the existing tool factories, session limits,
+  HTTP client and saved configuration; the binary ships as compiled JavaScript built
+  by `npm run build`.
+- MCP setup guide (`docs/mcp.md`) and a project instruction template for MCP agents
+  (`docs/agent-instructions.md`, for `CLAUDE.md`, `AGENTS.md` or Kiro steering).
+- `JEV_TOOLS_BASH` and `JEV_TOOLS_ROOT` settings (Windows bash path; MCP root).
+- MCP Registry publication: `server.json` (`io.github.NomenAK/jev-agent-tools`) and
+  `mcpName` in `package.json`. After the npm publish, the release workflow waits for the
+  approved version and its `mcpName` on npm, then publishes with a pinned, checksum-verified
+  `mcp-publisher` over GitHub OIDC; an existing registry version is skipped only
+  when its server definition matches the approved tarball's metadata.
+- `scripts/check-mcp-package.ts`: CI and release gate that installs the packed
+  tarball, checks modern discovery and all advertised legacy handshakes, and
+  exercises `jev_ask` against a local synthetic HTTP endpoint.
+- Native Windows and macOS CI for MCP, managed process termination, private
+  configuration, platform paths and the installed package; Linux retains the
+  complete offline suite.
+
+### Changed
+
+- The npm package now includes `SECURITY.md` and `docs/adr/`, which shipped
+  documentation already linked to.
+
 ### Fixed
+
+- MCP command cancellation and timeout now finish process-group escalation even
+  when the parent shell exits first. Closing stdin, SIGTERM and SIGINT drain
+  outstanding tool calls before the server exits; cancelled calls stay silent.
+- Windows command cleanup maps MSYS descendants before forced termination, so
+  Git Bash fork/exec no longer hides ordinary descendants from `taskkill /T`.
+- Package checks use local archive paths on Windows and macOS; private-storage
+  test fixtures use canonical macOS temporary paths without relaxing symlink checks.
+- Modern MCP discovery now includes server identity in result metadata, and
+  tool lists declare immediately stale, private caching as required by the
+  2026-07-28 protocol.
+- MCP Registry reruns skip only an identical server definition. Divergent,
+  malformed or inconclusive responses fail; registry metadata is checked
+  against `server.json` inside the approved tarball before lookup.
 
 - In omp, first-launch Jev setup no longer waits for credential entry inside the
   bounded `session_start` handler. The offer and input dialogs stay open while
   users find their endpoint and key, rather than closing after the host's
   30-second event deadline.
+- `JEV_TOOLS_MAX_USD` could be overshot by up to seven requests: concurrent batches
+  were all admitted before any cost was reported. Under a USD limit, requests are
+  now admitted one at a time, so only the final admitted request can exceed it.
+- Windows: `jev_ask` commands ran `env CI=1 bash`, which fails without `env` and
+  resolves to the WSL launcher. Git for Windows bash is now used.
+- Windows: imported providers were never found for `jev_check_diff` risk callers
+  because a repository path was resolved with platform path semantics.
+- Windows: node:test `file:///C:/...` failure locations (including `%20`) were not
+  mapped back to repository files.
+- Windows: an 8.3 short working directory (for example `C:\Users\NAME~1`) did not
+  relate to the Git root, which emptied import closures and file references.
+- Line endings are pinned to LF via `.gitattributes`, so lint and the rule/guideline
+  parity check pass on Windows checkouts with `core.autocrlf=true`.
+- Windows: saving or loading `/jev-setup` configuration always failed, because the
+  privacy check read POSIX mode bits, which Windows reports as `0o666` for every file.
+  Windows now checks the folder and file access lists (allow entries limited to the
+  current user, SYSTEM and Administrators) and restricts a new folder when saving.
+- Tests: `secret-input` passed a `C:\` path to `import()`; the risk-caller latency
+  test compared one run with a fixed 250 ms and now checks 250- to 1000-line scaling.
 
 ## [0.1.4] - 2026-10-02
 

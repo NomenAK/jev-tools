@@ -23,6 +23,13 @@ jobs:
         run: npm ci --include=optional
       - name: Typecheck
         run: npm run typecheck
+      - name: Build MCP server
+        run: npm run build
+      - name: MCP package check (packed server answers over stdio)
+        run: |
+          mkdir -p "$RUNNER_TEMP/pack"
+          npm pack --pack-destination "$RUNNER_TEMP/pack" > /dev/null
+          node scripts/check-mcp-package.ts "$RUNNER_TEMP"/pack/*.tgz
       - name: Import boundaries
         run: npm run check:imports
       - name: Lint
@@ -40,3 +47,31 @@ jobs:
         run: npm install --prefix "$HOME/.cache/jev-tools/additional-identities" ava@6.4.1 mocha@11.8.0 deno@2.9.6
       - name: Offline tests
         run: AVA_EXECUTABLE="$HOME/.cache/jev-tools/additional-identities/node_modules/.bin/ava" MOCHA_EXECUTABLE="$HOME/.cache/jev-tools/additional-identities/node_modules/.bin/mocha" DENO_EXECUTABLE="$HOME/.cache/jev-tools/additional-identities/node_modules/.bin/deno" VITEST4_EXECUTABLE="$HOME/.cache/jev-tools/vitest4-identity/node_modules/.bin/vitest" VITEST5_EXECUTABLE="$HOME/.cache/jev-tools/vitest5-identity/node_modules/.bin/vitest" npm test
+
+  native-mcp:
+    name: MCP on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --include=optional
+      - name: Typecheck and build
+        run: npm run typecheck && npm run build
+      - name: Native MCP, configuration and process regressions
+        run: node --test test/mcp.test.ts test/mcp-shutdown.test.ts test/process-tree.test.ts test/platform-paths.test.ts test/private-storage.test.ts test/configuration.test.ts test/secret-input.test.ts test/budget-concurrency.test.ts test/check-mcp-package.test.ts test/check-mcp-registry.test.ts test/server-json.test.ts
+      - name: Installed MCP package smoke
+        run: |
+          mkdir -p "$RUNNER_TEMP/pack"
+          npm pack --pack-destination "$RUNNER_TEMP/pack" > /dev/null
+          node scripts/check-mcp-package.ts "$RUNNER_TEMP"/pack/*.tgz

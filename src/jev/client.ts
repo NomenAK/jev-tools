@@ -259,10 +259,18 @@ export function createJevClient(
         });
         for (let attempt = 0; attempt < REQUEST_ATTEMPTS; attempt++) {
           let release: (() => void) | undefined;
+          let settle: (() => void) | undefined;
           const timeoutCancellation = new AbortController();
           let retryMs = Math.min(RETRY_MAX_MS, RETRY_BASE_MS * 2 ** attempt);
           try {
             release = await pool.acquire(options.signal);
+            if (stopped) {
+              missing(ids, stopped);
+              return;
+            }
+            // The reservation is held from here on; `finally` releases it on
+            // every exit path (stopped, refused, failed, aborted, answered).
+            settle = await options.awaitAdmission?.(options.signal);
             if (stopped) {
               missing(ids, stopped);
               return;
@@ -302,6 +310,9 @@ export function createJevClient(
               body = undefined;
             }
             addMetadata(body);
+            // Release the USD gate before any subdivision re-enters send().
+            settle?.();
+            settle = undefined;
             release();
             release = undefined;
             if (
@@ -438,6 +449,7 @@ export function createJevClient(
               return;
             }
           } finally {
+            settle?.();
             release?.();
             timeoutCancellation.abort();
           }

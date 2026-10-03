@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "@sinclair/typebox";
 import { collectAskFiles } from "../adapters/ask-files.ts";
+import { canonicalPath } from "../adapters/canonical-path.ts";
 import { shareGitInventory } from "../adapters/git-inventory.ts";
 import { hostUsage } from "../adapters/usage.ts";
 import { compileAsks, readAsks, reverseQuestions } from "../core/asks.ts";
@@ -67,6 +68,7 @@ export function createAskFilesTool(dependencies: ToolDependencies) {
       ctx: { cwd: string } & GuideContext,
     ) {
       const client = dependencies.client;
+      const cwd = await canonicalPath(ctx.cwd);
       const started = performance.now();
       const exec = shareGitInventory(execute);
       const totals = {
@@ -99,12 +101,7 @@ export function createAskFilesTool(dependencies: ToolDependencies) {
       if (!client) return finish({ refusal: NOT_CONFIGURED });
       const plan = compileAsks(args.asks, { surface: "files" });
       if (!plan.ok) return finish({ refusal: plan.error });
-      const collected = await collectAskFiles(
-        ctx.cwd,
-        args.paths,
-        signal,
-        exec,
-      );
+      const collected = await collectAskFiles(cwd, args.paths, signal, exec);
       if (!collected.ok) return finish({ refusal: collected.error });
       skipped = collected.skipped;
       if (!collected.files.length && skipped.length)
@@ -115,6 +112,7 @@ export function createAskFilesTool(dependencies: ToolDependencies) {
       let budget: BudgetRefusal | undefined;
       const options = {
         signal,
+        ...runtime.session.requestGate(),
         beforeRequest: (count: number) => {
           if (args.max_calls !== undefined && sent >= args.max_calls) {
             budget = {
@@ -148,7 +146,7 @@ export function createAskFilesTool(dependencies: ToolDependencies) {
           const integrity = checkIntegrity(state, plan.asks, [
             {
               ...file.identity,
-              insertedPath: resolve(ctx.cwd, state.path),
+              insertedPath: resolve(cwd, state.path),
               content: state.content,
               insertedSha256: createHash("sha256")
                 .update(state.content)

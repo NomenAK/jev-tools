@@ -1,4 +1,5 @@
 import type { Envelope } from "./core/output.ts";
+import type { JudgmentOptions } from "./jev/types.ts";
 import type { Result } from "./result.ts";
 
 export interface SessionLimits {
@@ -53,6 +54,10 @@ export class Session {
     cacheHits: 0,
   };
   private readonly limits: SessionLimits;
+  // USD gate: at most one admitted request in flight under a USD limit.
+  private gateHeld = false;
+  private gateEpoch = 0;
+  private gateWaiters = new Set<() => void>();
   constructor(limits: SessionLimits) {
     this.limits = limits;
   }
@@ -75,6 +80,56 @@ export class Session {
     this.counters.questions += questions;
     return { ok: true };
   }
+  /**
+   * Under a USD limit, admit one request at a time so each admission sees the
+   * cost reported by every earlier request; without it, concurrent batches are
+   * all admitted before any cost arrives and overshoot the limit. Only the
+   * final admitted request can then exceed the limit, as documented.
+   *
+   * `awaitAdmission` reserves the gate atomically: the availability check and
+   * `gateHeld = true` run with no await between them, so two callers cannot
+   * both pass. It resolves to a release function that the client calls on
+   * every exit path (response, refusal, failure, abort); release is
+   * idempotent and ignores a gate that `reset()` already replaced.
+   */
+  requestGate(): Pick<JudgmentOptions, "awaitAdmission"> {
+    return {
+      awaitAdmission: async (signal) => {
+        if (this.limits.maxUsd === undefined) return undefined;
+        while (this.gateHeld) {
+          signal?.throwIfAborted();
+          await new Promise<void>((resolve, reject) => {
+            const onAbort = () => {
+              this.gateWaiters.delete(wake);
+              reject(signal?.reason);
+            };
+            const wake = () => {
+              signal?.removeEventListener("abort", onAbort);
+              resolve();
+            };
+            this.gateWaiters.add(wake);
+            signal?.addEventListener("abort", onAbort, { once: true });
+          });
+        }
+        signal?.throwIfAborted();
+        this.gateHeld = true;
+        const epoch = this.gateEpoch;
+        let released = false;
+        return () => {
+          if (released || epoch !== this.gateEpoch) return;
+          released = true;
+          this.gateHeld = false;
+          this.wakeGateWaiters();
+        };
+      },
+    };
+  }
+  // Every waiter rechecks; the first to run reserves, the rest wait again.
+  private wakeGateWaiters(): void {
+    const waiters = [...this.gateWaiters];
+    this.gateWaiters.clear();
+    for (const wake of waiters) wake();
+  }
   recordUsage(usage: { costUsd: number }): void {
     this.counters.costUsd += usage.costUsd;
   }
@@ -93,6 +148,10 @@ export class Session {
     return { ...this.counters };
   }
   reset(): void {
+    // A new session generation: outstanding release functions become no-ops.
+    this.gateEpoch++;
+    this.gateHeld = false;
+    this.wakeGateWaiters();
     this.counters = {
       calls: 0,
       questions: 0,

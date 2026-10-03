@@ -4,8 +4,12 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
-const script = new URL("../scripts/check-imports.ts", import.meta.url);
+// URL.pathname yields "/C:/..." on Windows; fileURLToPath is portable.
+const script = fileURLToPath(
+  new URL("../scripts/check-imports.ts", import.meta.url),
+);
 async function check(files: Record<string, string>) {
   const cache = join(homedir(), ".cache", "jev-tools");
   await mkdir(cache, { recursive: true });
@@ -16,7 +20,7 @@ async function check(files: Record<string, string>) {
       await mkdir(dirname(file), { recursive: true });
       await writeFile(file, text);
     }
-    const result = spawnSync(process.execPath, [script.pathname, root], {
+    const result = spawnSync(process.execPath, [script, root], {
       encoding: "utf8",
     });
     return { code: result.status, output: result.stdout + result.stderr };

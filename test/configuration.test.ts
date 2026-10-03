@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { once } from "node:events";
 import {
   chmod,
@@ -15,11 +16,34 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type TestContext, test } from "node:test";
+import { canonicalPath } from "../src/adapters/canonical-path.ts";
+import { windowsStorage } from "../src/adapters/private-storage.ts";
 import { ConfigController } from "../src/configuration.ts";
 import type { JevClient } from "../src/jev/types.ts";
 
+const windows = process.platform === "win32";
+// mkdir's mode is ignored on Windows; restrict the ACL like a real save does.
+async function privateDirectory(path: string): Promise<void> {
+  await mkdir(path, { mode: 0o700 });
+  if (windows) await windowsStorage.restrictDirectory(path);
+}
+// Expose to other users with each platform's own permission model.
+async function makePublic(path: string, mode: number): Promise<void> {
+  if (windows) execFileSync("icacls", [path, "/grant", "*S-1-1-0:(R)"]);
+  else await chmod(path, mode);
+}
+async function isPrivate(path: string, mode: number): Promise<boolean> {
+  if (windows)
+    return windowsStorage.isPrivate([{ path, stat: await lstat(path) }]);
+  return ((await lstat(path)).mode & 0o777) === mode;
+}
+
 async function fixture(t: TestContext) {
-  const root = await mkdtemp(join(tmpdir(), "jev-configuration-"));
+  // Canonicalize tmpdir first: on macOS it holds a /var alias whose ancestor
+  // symlink the storage check must otherwise reject.
+  const root = await mkdtemp(
+    join(await canonicalPath(tmpdir()), "jev-configuration-"),
+  );
   t.after(() => rm(root, { recursive: true, force: true }));
   const directory = join(root, "config");
   const requests: { authorization: string | undefined; model: unknown }[] = [];
@@ -114,7 +138,7 @@ test("complete environment credentials work before session initialization and ar
 
 test("environment snapshot wins per field over flags and edits without persisting environment secrets", async (t) => {
   const f = await fixture(t);
-  await mkdir(f.directory, { mode: 0o700 });
+  await privateDirectory(f.directory);
   await writeFile(
     join(f.directory, "config.json"),
     JSON.stringify({
@@ -158,7 +182,7 @@ test("environment snapshot wins per field over flags and edits without persistin
 
 test("CLI URL takes priority and editable session model replaces saved model", async (t) => {
   const f = await fixture(t);
-  await mkdir(f.directory, { mode: 0o700 });
+  await privateDirectory(f.directory);
   await writeFile(
     join(f.directory, "config.json"),
     JSON.stringify({
@@ -205,11 +229,8 @@ test("explicit save reloads usable credentials with private directory and file p
     { url: f.url, apiKey: "saved-key", model: "saved-model" },
     true,
   );
-  assert.equal((await lstat(f.directory)).mode & 0o777, 0o700);
-  assert.equal(
-    (await lstat(join(f.directory, "config.json"))).mode & 0o777,
-    0o600,
-  );
+  assert.equal(await isPrivate(f.directory, 0o700), true);
+  assert.equal(await isPrivate(join(f.directory, "config.json"), 0o600), true);
   assert.deepEqual(await readdir(f.directory), ["config.json"]);
   const reloaded = new ConfigController({ env: {}, directory: f.directory });
   await reloaded.initialize({});
@@ -246,7 +267,7 @@ test("changing configuration immediately swaps clients and clears the old client
 
 test("partial saved configuration can be completed without overwriting it on initialization", async (t) => {
   const f = await fixture(t);
-  await mkdir(f.directory, { mode: 0o700 });
+  await privateDirectory(f.directory);
   const saved = JSON.stringify({ url: f.url });
   await writeFile(join(f.directory, "config.json"), saved, { mode: 0o600 });
   const controller = new ConfigController({ env: {}, directory: f.directory });
@@ -272,7 +293,7 @@ for (const content of [
 ]) {
   test(`malformed saved configuration is rejected without disclosing or overwriting its content: ${content}`, async (t) => {
     const f = await fixture(t);
-    await mkdir(f.directory, { mode: 0o700 });
+    await privateDirectory(f.directory);
     await writeFile(join(f.directory, "config.json"), content, { mode: 0o600 });
     const controller = new ConfigController({
       env: {},
@@ -302,7 +323,7 @@ for (const scenario of [
   test(`rejects ${scenario} without touching the target`, async (t) => {
     const f = await fixture(t);
     const target = join(f.root, "target");
-    await mkdir(target, { mode: 0o700 });
+    await privateDirectory(target);
     const content = JSON.stringify({ url: f.url, apiKey: "private-key" });
     await writeFile(join(target, "config.json"), content, { mode: 0o600 });
     let directory = f.directory;
@@ -312,7 +333,7 @@ for (const scenario of [
       await symlink(target, directory);
       directory = join(directory, "nested");
     } else {
-      await mkdir(directory, { mode: 0o700 });
+      await privateDirectory(directory);
       if (scenario === "file symlink") {
         await symlink(
           join(target, "config.json"),
@@ -322,7 +343,7 @@ for (const scenario of [
         await writeFile(join(directory, "config.json"), content, {
           mode: 0o600,
         });
-        await chmod(
+        await makePublic(
           scenario === "public directory"
             ? directory
             : join(directory, "config.json"),
@@ -350,7 +371,7 @@ test("failed save keeps the old credentials, client and cached results intact", 
   const oldClient = controller.client;
   await judge(oldClient);
   const content = await readFile(join(f.directory, "config.json"), "utf8");
-  await chmod(join(f.directory, "config.json"), 0o644);
+  await makePublic(join(f.directory, "config.json"), 0o644);
   await assert.rejects(
     controller.apply(
       { url: f.url, apiKey: "replacement-key", model: "replacement-model" },

@@ -109,166 +109,181 @@ test("killed precedes zero exit code and omp missing binary throws become values
   );
   assert.equal(missing.ok, false);
 });
-test("root collection handles type changes, hostile config, symlinks and bounded files", async () => {
-  const cwd = await mkdtemp(join(tmpdir(), "git-limits-"));
-  const run = (args: string[]) => exec("git", args, { cwd, timeout: 10000 });
-  try {
-    await run(["init", "-q"]);
-    await mkdir(join(cwd, "sub"));
-    await writeFile(
-      join(cwd, "sub", "a.ts"),
-      "export function f() {\n\n return 1;\n}\n",
-    );
-    await writeFile(join(cwd, "type.txt"), "old target\n");
-    await writeFile(join(cwd, "z.txt"), "before\n");
-    await writeFile(join(cwd, "large.txt"), "x\n".repeat(40000));
-    await symlink("missing-before", join(cwd, "link.txt"));
-    await writeFile(join(cwd, "pipe"), "tracked\n");
-    await run(["add", "."]);
-    const tree = await run(["write-tree"]);
-    const commit = await run([
-      "-c",
-      "user.name=Proof",
-      "-c",
-      "user.email=proof@example.invalid",
-      "commit-tree",
-      tree.stdout.trim(),
-      "-m",
-      "module",
-    ]);
-    await run([
-      "update-index",
-      "--add",
-      "--cacheinfo",
-      `160000,${commit.stdout.trim()},module`,
-    ]);
-    await run([
-      "-c",
-      "user.name=Proof",
-      "-c",
-      "user.email=proof@example.invalid",
-      "commit",
-      "-qm",
-      "base",
-    ]);
-    await unlink(join(cwd, "type.txt"));
-    await symlink("missing-target", join(cwd, "type.txt"));
-    await unlink(join(cwd, "link.txt"));
-    await symlink("missing-after", join(cwd, "link.txt"));
-    await writeFile(join(cwd, "z.txt"), "after\n");
-    await writeFile(join(cwd, "large.txt"), `changed\n${"x\n".repeat(39999)}`);
-    await writeFile(
-      join(cwd, "sub", "a.ts"),
-      "export function f() {\n\n return 2;\n}\n",
-    );
-    await writeFile(join(cwd, "sub", "new.txt"), "untracked\n");
-    await mkdir(join(cwd, "nested"));
-    await exec("git", ["init", "-q"], {
-      cwd: join(cwd, "nested"),
-      timeout: 10000,
-    });
-    const changedCommit = await run([
-      "-c",
-      "user.name=Proof",
-      "-c",
-      "user.email=proof@example.invalid",
-      "commit-tree",
-      tree.stdout.trim(),
-      "-m",
-      "changed module",
-    ]);
-    await run([
-      "update-index",
-      "--cacheinfo",
-      `160000,${changedCommit.stdout.trim()},module`,
-    ]);
-    await unlink(join(cwd, "pipe"));
-    await exec("mkfifo", [join(cwd, "pipe")], { cwd, timeout: 10000 });
-    for (const [key, value] of [
-      ["color.ui", "always"],
-      ["diff.suppressBlankEmpty", "true"],
-      ["diff.relative", "true"],
-      ["diff.noprefix", "true"],
-      ["diff.mnemonicPrefix", "true"],
-      ["diff.external", "false"],
-      ["core.quotePath", "false"],
-    ] as const)
-      await run(["config", key, value]);
-    const result = await collectUnits(exec, {
-      cwd: join(cwd, "sub"),
-      base: "HEAD",
-    });
-    assert.ok(result.ok, result.ok ? undefined : result.error);
-    assert.equal(result.files.find((f) => f.path === "type.txt")?.status, "T");
-    assert.equal(
-      result.files.find((f) => f.path === "type.txt")?.after,
-      "missing-target",
-    );
-    assert.equal(
-      result.files.find((f) => f.path === "type.txt")?.hunks.length,
-      2,
-    );
-    assert.equal(
-      result.files.find((f) => f.path === "type.txt")?.hunks[1]?.afterText,
-      "missing-target",
-    );
-    assert.equal(
-      result.files.find((f) => f.path === "link.txt")?.after,
-      "missing-after",
-    );
-    assert.equal(
-      result.files.find((f) => f.path === "link.txt")?.before,
-      "missing-before",
-    );
-    assert.equal(
-      result.files.find((f) => f.path === "z.txt")?.hunks[0]?.changes[0]
-        ?.afterStart,
-      1,
-    );
-    assert.equal(
-      result.files.find((f) => f.path === "sub/a.ts")?.hunks[0]?.changes[0]
-        ?.afterStart,
-      3,
-    );
-    assert.equal(
-      result.files.find((f) => f.path === "sub/new.txt")?.after,
-      "untracked\n",
-    );
-    assert.ok(
-      result.limits.some(
-        (l) => l.kind === "too_large" && l.file === "large.txt",
-      ),
-    );
-    assert.ok(
-      result.units.some(
-        (u) => u.file === "large.txt" && u.after?.includes("changed"),
-      ),
-    );
-    assert.ok(
-      result.limits.some(
-        (l) => l.kind === "unreadable" && l.file.startsWith("nested"),
-      ),
-    );
-    assert.ok(
-      result.limits.some((l) => l.kind === "unreadable" && l.file === "module"),
-    );
-    assert.ok(
-      result.limits.some((l) => l.kind === "unreadable" && l.file === "pipe"),
-    );
-    const scoped = await collectDiff(exec, {
-      cwd: join(cwd, "sub"),
-      base: "HEAD",
-      paths: ["a.ts"],
-    });
-    assert.ok(scoped.ok);
-    assert.deepEqual(
-      scoped.files.map((f) => f.path),
-      ["sub/a.ts"],
-    );
-  } finally {
-    await rm(cwd, { recursive: true, force: true });
-  }
-});
+test(
+  "root collection handles type changes, hostile config, symlinks and bounded files",
+  // Git for Windows checks symlinks out as plain files and has no FIFOs.
+  process.platform === "win32"
+    ? { skip: "requires POSIX symlinks and mkfifo" }
+    : {},
+  async () => {
+    const cwd = await mkdtemp(join(tmpdir(), "git-limits-"));
+    const run = (args: string[]) => exec("git", args, { cwd, timeout: 10000 });
+    try {
+      await run(["init", "-q"]);
+      await mkdir(join(cwd, "sub"));
+      await writeFile(
+        join(cwd, "sub", "a.ts"),
+        "export function f() {\n\n return 1;\n}\n",
+      );
+      await writeFile(join(cwd, "type.txt"), "old target\n");
+      await writeFile(join(cwd, "z.txt"), "before\n");
+      await writeFile(join(cwd, "large.txt"), "x\n".repeat(40000));
+      await symlink("missing-before", join(cwd, "link.txt"));
+      await writeFile(join(cwd, "pipe"), "tracked\n");
+      await run(["add", "."]);
+      const tree = await run(["write-tree"]);
+      const commit = await run([
+        "-c",
+        "user.name=Proof",
+        "-c",
+        "user.email=proof@example.invalid",
+        "commit-tree",
+        tree.stdout.trim(),
+        "-m",
+        "module",
+      ]);
+      await run([
+        "update-index",
+        "--add",
+        "--cacheinfo",
+        `160000,${commit.stdout.trim()},module`,
+      ]);
+      await run([
+        "-c",
+        "user.name=Proof",
+        "-c",
+        "user.email=proof@example.invalid",
+        "commit",
+        "-qm",
+        "base",
+      ]);
+      await unlink(join(cwd, "type.txt"));
+      await symlink("missing-target", join(cwd, "type.txt"));
+      await unlink(join(cwd, "link.txt"));
+      await symlink("missing-after", join(cwd, "link.txt"));
+      await writeFile(join(cwd, "z.txt"), "after\n");
+      await writeFile(
+        join(cwd, "large.txt"),
+        `changed\n${"x\n".repeat(39999)}`,
+      );
+      await writeFile(
+        join(cwd, "sub", "a.ts"),
+        "export function f() {\n\n return 2;\n}\n",
+      );
+      await writeFile(join(cwd, "sub", "new.txt"), "untracked\n");
+      await mkdir(join(cwd, "nested"));
+      await exec("git", ["init", "-q"], {
+        cwd: join(cwd, "nested"),
+        timeout: 10000,
+      });
+      const changedCommit = await run([
+        "-c",
+        "user.name=Proof",
+        "-c",
+        "user.email=proof@example.invalid",
+        "commit-tree",
+        tree.stdout.trim(),
+        "-m",
+        "changed module",
+      ]);
+      await run([
+        "update-index",
+        "--cacheinfo",
+        `160000,${changedCommit.stdout.trim()},module`,
+      ]);
+      await unlink(join(cwd, "pipe"));
+      await exec("mkfifo", [join(cwd, "pipe")], { cwd, timeout: 10000 });
+      for (const [key, value] of [
+        ["color.ui", "always"],
+        ["diff.suppressBlankEmpty", "true"],
+        ["diff.relative", "true"],
+        ["diff.noprefix", "true"],
+        ["diff.mnemonicPrefix", "true"],
+        ["diff.external", "false"],
+        ["core.quotePath", "false"],
+      ] as const)
+        await run(["config", key, value]);
+      const result = await collectUnits(exec, {
+        cwd: join(cwd, "sub"),
+        base: "HEAD",
+      });
+      assert.ok(result.ok, result.ok ? undefined : result.error);
+      assert.equal(
+        result.files.find((f) => f.path === "type.txt")?.status,
+        "T",
+      );
+      assert.equal(
+        result.files.find((f) => f.path === "type.txt")?.after,
+        "missing-target",
+      );
+      assert.equal(
+        result.files.find((f) => f.path === "type.txt")?.hunks.length,
+        2,
+      );
+      assert.equal(
+        result.files.find((f) => f.path === "type.txt")?.hunks[1]?.afterText,
+        "missing-target",
+      );
+      assert.equal(
+        result.files.find((f) => f.path === "link.txt")?.after,
+        "missing-after",
+      );
+      assert.equal(
+        result.files.find((f) => f.path === "link.txt")?.before,
+        "missing-before",
+      );
+      assert.equal(
+        result.files.find((f) => f.path === "z.txt")?.hunks[0]?.changes[0]
+          ?.afterStart,
+        1,
+      );
+      assert.equal(
+        result.files.find((f) => f.path === "sub/a.ts")?.hunks[0]?.changes[0]
+          ?.afterStart,
+        3,
+      );
+      assert.equal(
+        result.files.find((f) => f.path === "sub/new.txt")?.after,
+        "untracked\n",
+      );
+      assert.ok(
+        result.limits.some(
+          (l) => l.kind === "too_large" && l.file === "large.txt",
+        ),
+      );
+      assert.ok(
+        result.units.some(
+          (u) => u.file === "large.txt" && u.after?.includes("changed"),
+        ),
+      );
+      assert.ok(
+        result.limits.some(
+          (l) => l.kind === "unreadable" && l.file.startsWith("nested"),
+        ),
+      );
+      assert.ok(
+        result.limits.some(
+          (l) => l.kind === "unreadable" && l.file === "module",
+        ),
+      );
+      assert.ok(
+        result.limits.some((l) => l.kind === "unreadable" && l.file === "pipe"),
+      );
+      const scoped = await collectDiff(exec, {
+        cwd: join(cwd, "sub"),
+        base: "HEAD",
+        paths: ["a.ts"],
+      });
+      assert.ok(scoped.ok);
+      assert.deepEqual(
+        scoped.files.map((f) => f.path),
+        ["sub/a.ts"],
+      );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  },
+);
 test("unchanged submodules disappear; nested untracked status and symlink cwd are preserved", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "git-candidates-"));
   const run = (args: string[]) => exec("git", args, { cwd, timeout: 10000 });

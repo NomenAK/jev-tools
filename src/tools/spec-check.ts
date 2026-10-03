@@ -175,6 +175,7 @@ export async function runSpecCheck(
   if (!units.length) return finish();
   const judgment = await deps.client.judge(prepared.state, prepared.questions, {
     signal: input.signal,
+    ...deps.runtime.session.requestGate(),
     beforeRequest(questionCount) {
       if (input.maxCalls !== undefined && sent >= input.maxCalls) {
         budget = {

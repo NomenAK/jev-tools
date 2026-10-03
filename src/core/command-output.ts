@@ -241,9 +241,25 @@ export function failureTargets(text: string): {
     // window when no failing-tests block exists (short outputs).
     if (node && (inSecondWindow || (secondAnchor < 0 && inFirstWindow)))
       targets.push({
-        path: node[1]?.replace(/^file:\/\//, "") ?? "",
+        path: nodeTestPath(node[1] ?? ""),
         assertion: true,
       });
   }
   return { assertion: signature === "assertion", signature, targets };
+}
+
+/**
+ * node:test reports absolute locations as file URLs: file:///repo/a.mjs on
+ * POSIX and file:///C:/repo/a%20b.mjs on Windows. Convert them to plain,
+ * decoded paths; other locations are returned unchanged.
+ */
+export function nodeTestPath(location: string): string {
+  if (!location.startsWith("file://")) return location;
+  let path = location.slice("file://".length);
+  if (/^\/[A-Za-z]:\//.test(path)) path = path.slice(1);
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path;
+  }
 }
