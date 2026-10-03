@@ -9,6 +9,10 @@
 # The GitHub Release remains a draft until the published package is verified.
 # After npm publication, the mcp-registry job publishes server.json (copied at
 # pack time) to the official MCP Registry with GitHub OIDC; no secret is needed.
+# It runs release-artifact/check-mcp-registry.ts (also copied at pack time),
+# which first requires release-artifact/server.json to equal the server.json
+# embedded in the approved tarball, then reports skip only for a registry 200
+# whose server envelope equals the reviewed definition (404 means absent).
 # Keep server.json's versions equal to package.json (test/server-json.test.ts
 # and scripts/check-mcp-package.ts enforce it).
 
@@ -104,7 +108,10 @@ jobs:
       - name: Check the packed MCP server and its registry metadata
         run: |
           # The registry entry is published from this exact copy, not a later checkout.
+          # The registry helper travels with it, so the mcp-registry job runs the
+          # reviewed script from the artifact, not a later checkout.
           cp server.json release-artifact/server.json
+          cp scripts/check-mcp-registry.ts release-artifact/check-mcp-registry.ts
           node scripts/check-mcp-package.ts "release-artifact/$(node -p "require('./release-artifact/pack.json')[0].filename")"
       - uses: actions/upload-artifact@v4
         with:
@@ -224,24 +231,13 @@ jobs:
           }
           throw new Error(`${spec} did not appear on npm within five minutes.`);
           NODE
-      - name: Check registry idempotence (only 404 means absent)
+      - name: Check the approved tarball and registry idempotence (only 404 means absent)
         id: entry
         run: |
-          node --input-type=module <<'NODE'
-          import { appendFileSync, readFileSync } from 'node:fs';
-          const server = JSON.parse(readFileSync('release-artifact/server.json', 'utf8'));
-          const url = `${process.env.MCP_REGISTRY}/v0.1/servers/${encodeURIComponent(server.name)}/versions/${encodeURIComponent(server.version)}`;
-          const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
-          if (response.status === 200) {
-            console.log(`${server.name}@${server.version} is already in the MCP Registry; skipping publication.`);
-            appendFileSync(process.env.GITHUB_OUTPUT, 'exists=true\n');
-          } else if (response.status === 404) {
-            console.log('Registry returned 404: version is absent.');
-            appendFileSync(process.env.GITHUB_OUTPUT, 'exists=false\n');
-          } else {
-            throw new Error(`Registry lookup returned HTTP ${response.status}; absence is not established.`);
-          }
-          NODE
+          # Runs the reviewed helper from the artifact, not this checkout, and
+          # requires release-artifact/server.json to equal the server.json
+          # embedded in the approved tarball before any registry lookup.
+          node release-artifact/check-mcp-registry.ts "release-artifact/server.json" "release-artifact/$(node -p "require('./release-artifact/pack.json')[0].filename")"
       - name: Install pinned mcp-publisher and validate server.json
         run: |
           curl -fsSL -o mcp-publisher.tar.gz "https://github.com/modelcontextprotocol/registry/releases/download/${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz"
