@@ -1,9 +1,11 @@
+import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { killTree } from "../src/adapters/exec.ts";
 import { resolveShell } from "../src/adapters/shell.ts";
 
 const dir = await mkdtemp(join(tmpdir(), "jev-native-tree-"));
@@ -56,14 +58,8 @@ try {
         encoding: "utf8",
       }),
   );
-  console.log(
-    "[DEBUG-native-tree] taskkill " +
-      execFileSync(
-        join(system, "System32", "taskkill.exe"),
-        ["/PID", String(child.pid), "/T", "/F"],
-        { encoding: "utf8" },
-      ),
-  );
+  await killTree(child);
+  console.log("[DEBUG-native-tree] managed tree termination completed");
   console.log(
     "[DEBUG-native-tree] after " +
       execFileSync(powershell, ["-NoProfile", "-Command", snapshot], {
@@ -72,6 +68,11 @@ try {
   );
   await delay(30_500);
   console.log(`[DEBUG-native-tree] survived=${existsSync(survived)}`);
+  assert.equal(
+    existsSync(survived),
+    false,
+    "managed descendant survived cleanup",
+  );
 } finally {
   child.kill("SIGKILL");
   await rm(dir, { recursive: true, force: true });

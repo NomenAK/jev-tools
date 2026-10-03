@@ -1,5 +1,6 @@
 import { type ChildProcess, execFile, spawn } from "node:child_process";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import {
   PROCESS_KILL_GRACE_MS,
   PROCESS_PIPE_GRACE_MS,
@@ -8,37 +9,85 @@ import {
 import type { GitExec } from "../core/git.ts";
 
 /** Signal the managed process group, or await Windows process-tree termination. */
-export function killTree(
+export async function killTree(
   child: ChildProcess,
   signal: NodeJS.Signals = "SIGTERM",
   platform: NodeJS.Platform = process.platform,
 ): Promise<void> {
   const pid = child.pid;
-  if (pid === undefined) return Promise.resolve();
+  if (pid === undefined) return;
   if (platform === "win32") {
     const taskkill = join(
       process.env.SystemRoot ?? "C:\\Windows",
       "System32",
       "taskkill.exe",
     );
+    const pids = [pid];
+    // MSYS fork/exec can leave Windows parent IDs pointing at vanished helper
+    // processes. Use the same Bash installation's POSIX table before killing
+    // the root; taskkill /T alone cannot find those ordinary descendants.
+    if (basename(child.spawnfile).toLowerCase() === "bash.exe") {
+      const directory = dirname(child.spawnfile);
+      const ps = [
+        join(directory, "ps.exe"),
+        join(directory, "..", "usr", "bin", "ps.exe"),
+      ].find(existsSync);
+      if (ps) {
+        const snapshot = Promise.withResolvers<string>();
+        execFile(
+          ps,
+          ["-e"],
+          { windowsHide: true, timeout: PROCESS_TREE_TIMEOUT_MS },
+          (error, stdout) => snapshot.resolve(error ? "" : stdout),
+        );
+        const rows = [];
+        for (const line of (await snapshot.promise).split("\n")) {
+          const match = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s/.exec(line);
+          if (!match) continue;
+          rows.push({
+            pid: Number(match[1]),
+            parent: Number(match[2]),
+            windows: Number(match[4]),
+          });
+        }
+        const root = rows.find((row) => row.windows === pid);
+        if (root) {
+          const managed = new Set([root.pid]);
+          let added = true;
+          while (added) {
+            added = false;
+            for (const row of rows) {
+              if (!managed.has(row.pid) && managed.has(row.parent)) {
+                managed.add(row.pid);
+                if (row.windows > 0) pids.push(row.windows);
+                added = true;
+              }
+            }
+          }
+        }
+      }
+    }
     const { promise, resolve } = Promise.withResolvers<void>();
     execFile(
       taskkill,
-      ["/PID", String(pid), "/T", "/F"],
+      [...new Set(pids)]
+        .flatMap((target) => ["/PID", String(target)])
+        .concat("/T", "/F"),
       { windowsHide: true, timeout: PROCESS_TREE_TIMEOUT_MS },
       (error) => {
         if (error) child.kill();
         resolve();
       },
     );
-    return promise;
+    await promise;
+    return;
   }
   try {
     process.kill(-pid, signal);
   } catch {
     child.kill(signal);
   }
-  return Promise.resolve();
+  return;
 }
 
 function groupExists(child: ChildProcess): boolean {
@@ -68,6 +117,12 @@ export const spawnExec: GitExec = (command, args, options) => {
     killed: boolean;
   }>();
   const posix = process.platform !== "win32";
+  // Git's bin/bash.exe forwards to usr/bin/bash.exe. Spawn the MSYS process
+  // directly so its Windows PID can be matched in the POSIX process table.
+  if (!posix && basename(command).toLowerCase() === "bash.exe") {
+    const direct = join(dirname(command), "..", "usr", "bin", "bash.exe");
+    if (existsSync(direct)) command = direct;
+  }
   const child = spawn(command, args, {
     cwd: options.cwd,
     shell: false,

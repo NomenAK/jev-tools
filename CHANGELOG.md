@@ -40,6 +40,10 @@ modules are not a stable library API.
 - MCP command cancellation and timeout now finish process-group escalation even
   when the parent shell exits first. Closing stdin, SIGTERM and SIGINT drain
   outstanding tool calls before the server exits; cancelled calls stay silent.
+- Windows command cleanup maps MSYS descendants before forced termination, so
+  Git Bash fork/exec no longer hides ordinary descendants from `taskkill /T`.
+- Package checks use local archive paths on Windows and macOS; private-storage
+  test fixtures use canonical macOS temporary paths without relaxing symlink checks.
 - Modern MCP discovery now includes server identity in result metadata, and
   tool lists declare immediately stale, private caching as required by the
   2026-07-28 protocol.
