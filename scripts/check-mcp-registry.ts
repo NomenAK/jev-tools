@@ -21,7 +21,7 @@
 // release-artifact/ without a checkout.
 import { execFileSync } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export interface RegistryCheckOptions {
@@ -217,11 +217,12 @@ export function verifyArtifactTarball(
     throw new Error(`approved ${serverJsonPath} is not valid JSON`);
   }
   let embedded: string;
+  const archive = resolve(tarballPath);
   try {
     embedded = execFileSync(
       "tar",
-      ["-xzOf", resolve(tarballPath), "package/server.json"],
-      { encoding: "utf8" },
+      ["-xzOf", basename(archive), "package/server.json"],
+      { cwd: dirname(archive), encoding: "utf8" },
     );
   } catch {
     throw new Error(

@@ -21,7 +21,7 @@ import {
 } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import {
@@ -691,8 +691,13 @@ async function main(): Promise<void> {
   const server = parseServerJson(
     JSON.parse(readFileSync("server.json", "utf8")),
   );
+  // Absolute archive split into cwd + basename: GNU tar under Git Bash parses
+  // "C:..." as host "C", and BSD tar agrees on the relative form. Array args
+  // stay space-safe; member checks and fail-closed throws are unchanged.
   const problems = metadataProblems(pkg, server);
-  const listing = execFileSync("tar", ["-tzf", resolve(tarball)], {
+  const archive = resolve(tarball);
+  const listing = execFileSync("tar", ["-tzf", basename(archive)], {
+    cwd: dirname(archive),
     encoding: "utf8",
   }).split(/\r?\n/);
   for (const file of [

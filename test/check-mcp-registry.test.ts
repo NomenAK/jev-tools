@@ -3,7 +3,7 @@ import { execFileSync, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
@@ -362,13 +362,16 @@ async function makeArtifact(
   await mkdir(join(staging, "package"), { recursive: true });
   await writeFile(join(staging, "package", "server.json"), embeddedText);
   const tarballPath = join(dir, "package.tgz");
-  execFileSync("tar", [
-    "-czf",
-    tarballPath,
-    "-C",
-    staging,
-    "package/server.json",
-  ]);
+  // Absolute archive as cwd-relative form: GNU tar under Git Bash parses
+  // "C:..." as host "C", and BSD tar agrees on the relative form. Array args
+  // stay space-safe; member and contents are unchanged.
+  const archive = resolve(tarballPath);
+  const stagingDir = resolve(staging);
+  execFileSync(
+    "tar",
+    ["-czf", relative(stagingDir, archive), "package/server.json"],
+    { cwd: stagingDir },
+  );
   return { serverPath, tarballPath };
 }
 
