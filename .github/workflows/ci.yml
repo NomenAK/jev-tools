@@ -68,9 +68,6 @@ jobs:
         run: npm ci --include=optional
       - name: Typecheck and build
         run: npm run typecheck && npm run build
-      - name: Diagnose nested Windows process tree
-        if: runner.os == 'Windows'
-        run: node scripts/probe-windows-tree.ts
       - name: Native MCP, configuration and process regressions
         run: node --test test/mcp.test.ts test/mcp-shutdown.test.ts test/process-tree.test.ts test/platform-paths.test.ts test/private-storage.test.ts test/configuration.test.ts test/secret-input.test.ts test/budget-concurrency.test.ts test/check-mcp-package.test.ts test/check-mcp-registry.test.ts test/server-json.test.ts
       - name: Installed MCP package smoke
