@@ -65,14 +65,25 @@ export function windowsBashCandidates(env: NodeJS.ProcessEnv): string[] {
 
 const UNAVAILABLE =
   "No permitted bash found: install Git for Windows or set JEV_TOOLS_BASH to the full path of a bash that is not the WSL launcher.";
+/** Never handed to command children: the Jev API key stays with the extension. */
+export const API_KEY_VARIABLE = "JEV_TOOLS_API_KEY";
+
+/** Copy of `env` without the Jev API key (any case, for Windows). */
+export function withoutApiKey(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const copy = { ...env };
+  for (const key of Object.keys(copy))
+    if (key.toUpperCase() === API_KEY_VARIABLE) delete copy[key];
+  return copy;
+}
 let cached: ShellResolution | undefined;
 
 /**
- * POSIX hosts keep `env CI=1 bash -c`. Windows has no `env` and its default
- * `bash` is the WSL launcher, so resolve Git for Windows bash (or
- * JEV_TOOLS_BASH) to an absolute, permitted path and export CI inside the
- * script. When none is found this fails closed: no bare name is returned,
- * because spawning one would search PATH again without the WSL exclusion.
+ * POSIX hosts run `env -u JEV_TOOLS_API_KEY CI=1 bash -c`. Windows has no
+ * `env` and its default `bash` is the WSL launcher, so resolve Git for Windows
+ * bash (or JEV_TOOLS_BASH) to an absolute, permitted path, and unset the key
+ * and export CI inside the script. When none is found this fails closed: no
+ * bare name is returned, because spawning one would search PATH again without
+ * the WSL exclusion.
  */
 export function resolveShell(
   platform: NodeJS.Platform = process.platform,
@@ -83,14 +94,19 @@ export function resolveShell(
     return {
       ok: true,
       executable: "env",
-      prefix: ["CI=1", "bash"],
+      prefix: ["-u", API_KEY_VARIABLE, "CI=1", "bash"],
       scriptPrefix: "",
     };
   const useCache = isExecutable === executable && env === process.env;
   if (useCache && cached) return cached;
   const found = windowsBashCandidates(env).find((path) => isExecutable(path));
   const resolved: ShellResolution = found
-    ? { ok: true, executable: found, prefix: [], scriptPrefix: "export CI=1; " }
+    ? {
+        ok: true,
+        executable: found,
+        prefix: [],
+        scriptPrefix: `unset ${API_KEY_VARIABLE}; export CI=1; `,
+      }
     : { ok: false, error: UNAVAILABLE };
   if (useCache && found) cached = resolved;
   return resolved;

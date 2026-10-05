@@ -32,12 +32,23 @@ export interface CommandOutput {
   compressed: boolean;
   truncated: boolean;
 }
+/** Replace every occurrence of `secret` in `text`, counting replacements. */
+export function redactSecret(
+  text: string,
+  secret: string | undefined,
+): { text: string; count: number } {
+  if (!secret) return { text, count: 0 };
+  const parts = text.split(secret);
+  return { text: parts.join("[redacted]"), count: parts.length - 1 };
+}
 export async function captureCommand(
   exec: GitExec,
   cwd: string,
   command: string,
   timeoutS = ASK_TIMEOUT_S,
   signal?: AbortSignal,
+  /** Configured Jev API key, replaced in the captured command and output. */
+  secret?: string,
 ): Promise<
   Result<{
     output: CommandOutput;
@@ -48,6 +59,8 @@ export async function captureCommand(
     selectedPassages: boolean;
     assertion: boolean;
     targets: FailureTarget[];
+    /** Occurrences of `secret` replaced with `[redacted]`. */
+    redactions: number;
   }> & {
     commandExecution: "not_started" | "unknown" | "finished";
     commandExitCode?: number | null;
@@ -138,16 +151,22 @@ export async function captureCommand(
     let lineOmittedChars = 0;
     let shapeLimitExceeded = false;
     const texts: string[] = [];
+    let redactions = 0;
+    const redacted = (text: string): string => {
+      const result = redactSecret(text, secret);
+      redactions += result.count;
+      return result.text;
+    };
     for (const [index, path] of [stdoutPath, stderrPath].entries()) {
       if (!sizes[index]) {
-        texts.push(index === 0 ? executed.stdout : executed.stderr);
+        texts.push(redacted(index === 0 ? executed.stdout : executed.stderr));
         continue;
       }
       const frequencies = new Map<string, number>();
       let shapeLimit = false;
       for await (const raw of outputLines(path, signal)) {
         signal?.throwIfAborted();
-        const line = cleanOutput(raw);
+        const line = redactSecret(cleanOutput(raw), secret).text;
         linesTruncated ||= raw.endsWith(
           `…[line truncated at ${OUTPUT_LINE_MAX_CHARS} chars]`,
         );
@@ -200,14 +219,16 @@ export async function captureCommand(
         linesTruncated ||= raw.endsWith(
           `…[line truncated at ${OUTPUT_LINE_MAX_CHARS} chars]`,
         );
-        compressor.line(cleanOutput(raw));
+        // Redact before compression, failure windows and state assembly.
+        const line = redacted(cleanOutput(raw));
+        compressor.line(line);
         if (!failureSeen) {
-          failureWindow.push(cleanOutput(raw));
+          failureWindow.push(line);
           if (failureWindow.length > OUTPUT_FAILURE_WINDOW_LINES + 1)
             failureWindow.shift();
           if (isAnchor(raw)) failureSeen = true;
         } else if (afterFailure++ < OUTPUT_FAILURE_WINDOW_LINES) {
-          failureWindow.push(cleanOutput(raw));
+          failureWindow.push(line);
           if (!secondSeen && afterFailure > 1 && isFailingTestsHeader(raw)) {
             secondSeen = true;
             afterSecond = 0;
@@ -216,10 +237,10 @@ export async function captureCommand(
           if (isFailingTestsHeader(raw)) {
             secondSeen = true;
             afterSecond = 0;
-            failureWindow.push(cleanOutput(raw));
+            failureWindow.push(line);
           }
         } else if (afterSecond++ < OUTPUT_FAILURE_WINDOW_LINES) {
-          failureWindow.push(cleanOutput(raw));
+          failureWindow.push(line);
         }
       }
       compressor.finish();
@@ -233,7 +254,7 @@ export async function captureCommand(
       commandExecution: "finished",
       ...completion,
       output: {
-        command,
+        command: redacted(command),
         exit_code: executed.killed ? null : executed.code,
         timed_out: executed.killed,
         stdout: texts[0] ?? "",
@@ -248,6 +269,7 @@ export async function captureCommand(
       selectedPassages: false,
       assertion: signature === "assertion",
       targets,
+      redactions,
     };
   } catch (error) {
     signal?.throwIfAborted();

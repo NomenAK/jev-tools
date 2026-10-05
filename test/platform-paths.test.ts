@@ -21,13 +21,13 @@ test("node:test file URLs become plain decoded paths on both platforms", () => {
   assert.equal(nodeTestPath("file:///bad%zzpath"), "/bad%zzpath");
 });
 
-test("POSIX shell invocation is unchanged", () => {
+test("POSIX shell invocation drops the Jev API key", () => {
   assert.deepEqual(
     resolveShell("linux", {}, () => false),
     {
       ok: true,
       executable: "env",
-      prefix: ["CI=1", "bash"],
+      prefix: ["-u", "JEV_TOOLS_API_KEY", "CI=1", "bash"],
       scriptPrefix: "",
     },
   );
@@ -58,7 +58,7 @@ test("Windows never selects the WSL bash launchers", () => {
     ok: true,
     executable: gitBash,
     prefix: [],
-    scriptPrefix: "export CI=1; ",
+    scriptPrefix: "unset JEV_TOOLS_API_KEY; export CI=1; ",
   });
 });
 

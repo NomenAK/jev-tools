@@ -594,6 +594,7 @@ export function createAskTool(dependencies: ToolDependencies) {
             args.command,
             args.timeout_s,
             signal,
+            dependencies.apiKey ?? process.env.JEV_TOOLS_API_KEY,
           )
         : undefined;
       if (command?.ok)
@@ -1501,6 +1502,14 @@ export function createAskTool(dependencies: ToolDependencies) {
                 {
                   fact: `output: ${command.output.command} → ${command.output.timed_out ? "timed out" : `exit ${command.output.exit_code ?? "unavailable"}`} (${command.originalBytes} bytes → ${command.compressedChars} chars, repetitive lines collapsed${command.lineOmittedChars ? `, ${command.lineOmittedChars} line chars omitted` : ""}${command.selectedPassages ? ", selected passages" : ""})`,
                   next: "read command output with bash when exact text is needed",
+                },
+              ]
+            : []),
+          ...(command?.ok && command.redactions
+            ? [
+                {
+                  fact: `output: ${command.redactions} occurrence${command.redactions === 1 ? "" : "s"} of the configured Jev API key replaced with [redacted]`,
+                  next: "remove the key from the command's output; it is never sent to Jev",
                 },
               ]
             : []),

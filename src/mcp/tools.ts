@@ -69,22 +69,26 @@ function validationError(schema: TSchema, value: unknown): string | undefined {
 export async function loadMcpClient(
   env: NodeJS.ProcessEnv,
   configDirectory?: string,
-): Promise<{ client?: JevClient; warning?: string }> {
+): Promise<{ client?: JevClient; apiKey?: string; warning?: string }> {
   try {
     const controller = new ConfigController({
       env,
       ...(configDirectory ? { directory: configDirectory } : {}),
     });
+    const configured = () =>
+      controller.client
+        ? { client: controller.client, apiKey: controller.values().apiKey }
+        : {};
     try {
       await controller.initialize({});
     } catch (error) {
       // Saved storage unusable: environment configuration (if any) still applies.
       return {
-        ...(controller.client ? { client: controller.client } : {}),
+        ...configured(),
         warning: error instanceof Error ? error.message : String(error),
       };
     }
-    return controller.client ? { client: controller.client } : {};
+    return configured();
   } catch (error) {
     return { warning: error instanceof Error ? error.message : String(error) };
   }
@@ -103,11 +107,12 @@ export async function createMcpTools(options: McpToolOptions): Promise<{
   const env = options.env ?? process.env;
   const host = mcpHost();
   const loaded = options.client
-    ? { client: options.client }
+    ? { client: options.client, apiKey: env.JEV_TOOLS_API_KEY }
     : await loadMcpClient(env, options.configDirectory);
   const client = loaded.client;
   const dependencies: ToolDependencies = {
     client,
+    apiKey: loaded.apiKey,
     host,
     evidenceOrigin: "server",
     runtime: {
