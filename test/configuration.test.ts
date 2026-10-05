@@ -149,7 +149,7 @@ test("environment snapshot wins per field over flags and edits without persistin
   await writeFile(
     join(f.directory, "config.json"),
     JSON.stringify({
-      url: "http://saved.invalid",
+      url: "https://saved.invalid",
       apiKey: "saved-key",
       model: "saved-model",
     }),
@@ -163,7 +163,7 @@ test("environment snapshot wins per field over flags and edits without persistin
   const controller = new ConfigController({ env, directory: f.directory });
   env.JEV_TOOLS_API_KEY = "mutated-key";
   await controller.initialize({
-    url: "http://flag.invalid",
+    url: "http://127.0.0.1/flag",
     model: "flag-model",
   });
   assert.equal(controller.locked("url"), true);
@@ -181,7 +181,7 @@ test("environment snapshot wins per field over flags and edits without persistin
     await readFile(join(f.directory, "config.json"), "utf8"),
   );
   assert.deepEqual(saved, {
-    url: "http://saved.invalid",
+    url: "https://saved.invalid",
     apiKey: "saved-key",
     model: "saved-model",
   });
@@ -193,7 +193,7 @@ test("CLI URL takes priority and editable session model replaces saved model", a
   await writeFile(
     join(f.directory, "config.json"),
     JSON.stringify({
-      url: "http://saved.invalid",
+      url: "https://saved.invalid",
       apiKey: "saved-key",
       model: "saved-model",
     }),
@@ -209,7 +209,7 @@ test("CLI URL takes priority and editable session model replaces saved model", a
   assert.equal(controller.locked("model"), false);
   await controller.apply(
     {
-      url: "http://ignored.invalid",
+      url: "https://ignored.invalid",
       apiKey: "edited-key",
       model: "edited-model",
     },
@@ -420,7 +420,7 @@ test("invalid effective configuration reports no secret and leaves a usable clie
   ]) {
     await assert.rejects(controller.apply(invalid, true), (error: unknown) => {
       assert.ok(error instanceof Error);
-      assert.match(error.message, /full HTTP\(S\) URL/);
+      assert.match(error.message, /full https: URL/);
       assert.equal(error.message.includes("secret"), false);
       return true;
     });
@@ -430,5 +430,54 @@ test("invalid effective configuration reports no secret and leaves a usable clie
   assert.deepEqual(f.requests, [
     { authorization: "Bearer valid-key", model: "valid-model" },
   ]);
+  assert.deepEqual(await readdir(f.root), []);
+});
+
+test("plain http is refused outside loopback without disclosing URL or key; loopback http and https are accepted", async (t) => {
+  const f = await fixture(t);
+  const key = "transport-secret-key";
+  assert.throws(
+    () =>
+      new ConfigController({
+        env: {
+          JEV_TOOLS_URL: "http://example.com/v1/systemone",
+          JEV_TOOLS_API_KEY: key,
+        },
+        directory: f.directory,
+      }),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /refuses plain http:/);
+      assert.equal(error.message.includes("example.com"), false);
+      assert.equal(error.message.includes(key), false);
+      return true;
+    },
+  );
+  const controller = new ConfigController({ env: {}, directory: f.directory });
+  await controller.initialize({});
+  await assert.rejects(
+    controller.apply(
+      { url: "http://example.com/v1/systemone", apiKey: key, model: "m" },
+      false,
+    ),
+    (error: unknown) => {
+      assert.ok(error instanceof Error);
+      assert.match(error.message, /refuses plain http:/);
+      assert.equal(error.message.includes("example.com"), false);
+      assert.equal(error.message.includes(key), false);
+      return true;
+    },
+  );
+  assert.equal(controller.client, undefined);
+  for (const url of [
+    "http://127.0.0.1:8080/x",
+    "http://localhost/x",
+    "http://[::1]:8080/x",
+    "https://example.com/v1/systemone",
+  ]) {
+    await controller.apply({ url, apiKey: key, model: "m" }, false);
+    assert.ok(controller.client);
+    assert.equal(controller.values().url, url);
+  }
   assert.deepEqual(await readdir(f.root), []);
 });

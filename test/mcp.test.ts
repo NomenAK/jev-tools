@@ -495,7 +495,7 @@ test("MCP uses configuration saved by /jev-setup and survives unusable storage",
     join(directory, "absent"),
   );
   assert.equal(invalid.client, undefined);
-  assert.match(invalid.warning ?? "", /full HTTP\(S\) URL/);
+  assert.match(invalid.warning ?? "", /full https: URL/);
 });
 
 // End to end: a real stdio server process talking to a local fake Jev endpoint.
