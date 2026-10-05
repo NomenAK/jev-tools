@@ -204,7 +204,7 @@ export function createAskTool(dependencies: ToolDependencies) {
         result: Judgment,
         input: Omit<EnvelopeInput, "yield">,
       ) => {
-        const { content, envelope } = finishToolCall(runtime, ctx, started, input, {
+        const { envelope } = finishToolCall(runtime, ctx, started, input, {
           calls: result.calls ?? 0,
           questions: result.questions ?? 0,
           costUsd: result.usage?.costUsd,
@@ -1140,8 +1140,7 @@ export function createAskTool(dependencies: ToolDependencies) {
             planned.plan,
             found,
           );
-          if (!fitted.ok)
-            return textResult(fitted.error, "evidence_too_large");
+          if (!fitted.ok) return textResult(fitted.error, "evidence_too_large");
           output.stdout = fitted.fitted.stdout;
           output.stderr = fitted.fitted.stderr;
           if (fitted.fitted.omittedFailing)

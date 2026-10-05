@@ -54,8 +54,8 @@ import {
 import { renderResultReport } from "../render.ts";
 import type { ToolDependencies } from "../runtime.ts";
 import { SELECT_TESTS_DESCRIPTION } from "../texts/select-tests.ts";
-import { controlsFor, ReviewReport, reportMetrics } from "./review-report.ts";
 import { createJudgeOptions, finishToolCall } from "./judge-options.ts";
+import { controlsFor, ReviewReport, reportMetrics } from "./review-report.ts";
 
 export const selectTestsParameters = Type.Object(
   {
@@ -194,7 +194,7 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
               costKnown && !unknownCost ? totals.usage.costUsd : undefined,
             elapsedMs: performance.now() - started,
           },
-        });
+        );
         if (input.refusal) {
           report.refusal = true;
           report.diagnose(cause ?? "internal_error", input.refusal);
@@ -730,13 +730,13 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
                 report.failure(
                   result,
                   batchIds,
-                  budget
-                    ? budget.kind === "session"
-                      ? "session_budget"
-                      : "call_budget"
-                    : !client
-                      ? "not_configured"
-                      : undefined,
+                  budget()?.kind === "session"
+                    ? "session_budget"
+                    : budget()
+                      ? "call_budget"
+                      : !client
+                        ? "not_configured"
+                        : undefined,
                 );
               else
                 for (const scenario of batch.scenarios) {
@@ -940,13 +940,13 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
                     report.failure(
                       result,
                       [id],
-                      budget
-                        ? budget.kind === "session"
-                          ? "session_budget"
-                          : "call_budget"
-                        : !client
-                          ? "not_configured"
-                          : undefined,
+                      budget()?.kind === "session"
+                        ? "session_budget"
+                        : budget()
+                          ? "call_budget"
+                          : !client
+                            ? "not_configured"
+                            : undefined,
                     );
                   else
                     report.answer(

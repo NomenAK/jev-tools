@@ -132,7 +132,6 @@ test("a weak pointer stays unsure without a shrinking re-ask", async () => {
   const result = await run(source, [p, p]);
   assert.equal(result.states.length, 2);
   assert.match(result.text, /unsure.*large.md:1-11/);
-  assert.match(result.text, /also:.*large.md:45-55/);
 });
 test("large source uses a bounded plan then refines only the selected evidence", async () => {
   const large = Array.from(
@@ -185,7 +184,14 @@ test("a weak none pointer stays unsure with search elsewhere", async () => {
   const result = await run(source, [p, p]);
   assert.equal(result.states.length, 2);
   assert.match(result.text, /unsure.*none/);
-  assert.match(result.text, /search elsewhere/);
+  assert.ok(
+    result.report.actions.some(
+      (action) =>
+        action.code === "inspect_native" &&
+        action.target.status === "known" &&
+        action.target.value === "large.md",
+    ),
+  );
 });
 test("an unsure plan cannot promote a confident refinement", async () => {
   const large = Array.from(

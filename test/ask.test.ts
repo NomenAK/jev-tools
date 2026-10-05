@@ -224,7 +224,11 @@ test("verify missing twin remains visible alongside decide text", async () => {
       for (const id of Object.values(reading.controls ?? {}))
         answers[id] = { type: "bool", source: "fresh", p: 0.98 };
       if (reading.sameSubject)
-        answers[reading.sameSubject] = { type: "bool", source: "fresh", p: 0.98 };
+        answers[reading.sameSubject] = {
+          type: "bool",
+          source: "fresh",
+          p: 0.98,
+        };
     } else {
       answers[reading.id] = {
         type: "choice",
@@ -375,7 +379,12 @@ test("single-category classify with a low peak issues one request and no reverse
   // One substantive option cannot permute, so no twin re-ask is scheduled.
   assert.equal(calls, 1);
   assert.deepEqual(seen, [["q1"]]);
-  assert.match(result.content[0]?.text ?? "", /unsure.*lone \(0\.6\)/);
+  const [classify] = result.details.result.items;
+  assert.equal(classify?.treatment, "judged");
+  if (classify?.treatment === "judged") {
+    assert.equal(classify.judgment.band, "unsure");
+    assert.equal(classify.judgment.result, "lone");
+  }
 });
 test("verify contradiction triggers one same-subject round and holds triggers none", async () => {
   const rounds: { ids: string[]; instructions: string[] }[] = [];
@@ -398,7 +407,10 @@ test("verify contradiction triggers one same-subject round and holds triggers no
           calls: 1,
           questions: 1,
           answers: Object.fromEntries(
-            Object.keys(questions).map((id) => [id, { type: "bool", source: "fresh", p: 0.1 }]),
+            Object.keys(questions).map((id) => [
+              id,
+              { type: "bool", source: "fresh", p: 0.1 },
+            ]),
           ),
         };
       return {
@@ -518,5 +530,10 @@ test("verify holds verdict issues no same-subject round", async () => {
     { cwd: "." },
   );
   assert.equal(calls, 1);
-  assert.match(result.content[0]?.text ?? "", /= holds \(0\.93\)/);
+  const [holds] = result.details.result.items;
+  assert.equal(holds?.treatment, "judged");
+  if (holds?.treatment === "judged") {
+    assert.equal(holds.judgment.band, "verdict");
+    assert.equal(holds.judgment.result, "holds");
+  }
 });

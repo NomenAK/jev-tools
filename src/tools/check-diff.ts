@@ -53,8 +53,8 @@ import { CHECK_DIFF_DESCRIPTION } from "../texts/check-diff.ts";
 import { NOT_CONFIGURED } from "../texts/configuration.ts";
 import { CHECK_DIFF_GUIDELINE } from "../texts/instructions.ts";
 import { runDocsCheck } from "./docs-check.ts";
-import { controlsFor, ReviewReport, reportMetrics } from "./review-report.ts";
 import { createJudgeOptions } from "./judge-options.ts";
+import { controlsFor, ReviewReport, reportMetrics } from "./review-report.ts";
 import { runSpecCheck } from "./spec-check.ts";
 
 export const checkDiffParameters = Type.Object(
@@ -296,6 +296,7 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
               (n, j) => n + (j.cacheRequests ?? 0),
               0,
             ),
+            elapsedMs: performance.now() - started,
           },
         });
         if (emptyBase !== undefined)

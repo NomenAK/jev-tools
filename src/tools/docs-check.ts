@@ -39,8 +39,8 @@ import {
 } from "../presets/docs.ts";
 import type { ToolDependencies } from "../runtime.ts";
 import { NOT_CONFIGURED } from "../texts/configuration.ts";
-import { ReviewReport, reportMetrics } from "./review-report.ts";
 import { createJudgeOptions } from "./judge-options.ts";
+import { ReviewReport, reportMetrics } from "./review-report.ts";
 
 export interface DocsCheckInput {
   cwd: string;
@@ -476,7 +476,9 @@ export async function runDocsCheck(
         const settledBudget = budget();
         if (settledBudget?.kind === "session") {
           unchecked.push(`${label} (${settledBudget.message})`);
-          report.diagnose("session_budget", settledBudget.message, label, [reportId]);
+          report.diagnose("session_budget", settledBudget.message, label, [
+            reportId,
+          ]);
           return;
         }
         const prepared = prepareDocsCheck(candidate);

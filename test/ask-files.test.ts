@@ -135,10 +135,31 @@ test("all asks share each exact file state, parallel judgments obey max_calls an
         { path: "b.ts", content: "export const name = 'b.ts';" },
       ],
     );
+    const report = result.details.result;
     const text = result.content[0]?.text ?? "";
-    assert.match(text, /c1.*validates tokens.*no \(not shown\)/);
-    assert.match(text, /unchecked: c.ts/);
-    assert.match(text, /2 calls · 12 questions/);
+    const judged = report.items.filter(
+      (item) => item.treatment === "judged",
+    );
+    assert.equal(judged.length, 4);
+    assert.ok(
+      judged.every(
+        (item) =>
+          item.treatment === "judged" &&
+          item.source === "fresh" &&
+          item.judgment.band === "verdict" &&
+          item.judgment.result === false,
+      ),
+    );
+    const pending = report.items.filter(
+      (item) => item.treatment !== "judged",
+    );
+    assert.equal(pending.length, 2);
+    assert.ok(pending.every((item) => item.label.includes("c.ts")));
+    assert.ok(
+      report.diagnostics.some(
+        (diagnostic) => diagnostic.cause === "call_budget",
+      ),
+    );
     assert.doesNotMatch(text, /export const/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
@@ -216,9 +237,13 @@ test("contradicted files verdicts judge the same-subject control in a second rou
     );
     // Three first-round questions, then the same-subject control alone.
     assert.deepEqual(rounds, [["q1", "q2", "q3"], ["q4"]]);
-    const text = result.content[0]?.text ?? "";
-    assert.match(text, /contradicted \(0\.93\)/);
-    assert.doesNotMatch(text, /unsure/);
+    const [item] = result.details.result.items;
+    assert.equal(item?.treatment, "judged");
+    if (item?.treatment === "judged") {
+      assert.equal(item.judgment.band, "verdict");
+      assert.equal(item.judgment.result, "contradicted");
+      assert.equal(item.source, "fresh");
+    }
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

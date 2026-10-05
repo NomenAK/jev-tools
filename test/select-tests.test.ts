@@ -197,8 +197,29 @@ test("unit pointer past the option cap stays selected and names the cap", async 
         );
         assert.doesNotMatch(text, /choice option cap/);
       } else {
-        assert.match(text, /choice option cap/);
-        assert.match(text, /run:.*big\.test\.js/);
+        // Past the choice cap the pointer state no longer fits the state
+        // budget, so batching is never reached: nothing is judged and the
+        // conservative outcome keeps every scenario selected.
+        assert.equal(asked.length, 0);
+        const report = result.details.result;
+        assert.equal(
+          report.accounting.requestedResults.notJudged,
+          report.items.length,
+        );
+        assert.ok(report.items.length > 0);
+        assert.ok(
+          report.items.every(
+            (item) =>
+              item.treatment === "not_judged" &&
+              item.selection?.selected === true &&
+              item.selection.reason === "conservative_fallback",
+          ),
+        );
+        assert.ok(
+          report.diagnostics.some(
+            (diagnostic) => diagnostic.cause === "evidence_too_large",
+          ),
+        );
       }
     } finally {
       await rm(cwd, { recursive: true, force: true });

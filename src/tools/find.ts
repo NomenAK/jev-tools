@@ -239,7 +239,9 @@ export function createFindFilesTool(dependencies: ToolDependencies) {
         const settledBudget = budget();
         if (settledBudget)
           diagnostic(
-            settledBudget.kind === "max_calls" ? "call_budget" : "session_budget",
+            settledBudget.kind === "max_calls"
+              ? "call_budget"
+              : "session_budget",
             settledBudget.message,
             [...new Set(unchecked)],
           );

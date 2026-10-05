@@ -26,8 +26,8 @@ import {
 } from "../presets/spec.ts";
 import type { ToolDependencies } from "../runtime.ts";
 import { NOT_CONFIGURED } from "../texts/configuration.ts";
-import { ReviewReport, reportMetrics } from "./review-report.ts";
 import { createJudgeOptions } from "./judge-options.ts";
+import { ReviewReport, reportMetrics } from "./review-report.ts";
 
 export interface SpecCheckResult {
   ok: boolean;
@@ -315,11 +315,11 @@ export async function runSpecCheck(
     report.failure(
       judgment,
       reportIds,
-      budget()
-        ? budget().kind === "session"
-          ? "session_budget"
-          : "call_budget"
-        : undefined,
+      budget()?.kind === "session"
+        ? "session_budget"
+        : budget()
+          ? "call_budget"
+          : undefined,
     );
   else {
     for (const requirement of prepared.requirements)

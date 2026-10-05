@@ -17,11 +17,7 @@ import {
   sameSubjectQuestions,
 } from "../core/asks.ts";
 import { checkIntegrity } from "../core/integrity.ts";
-import type {
-  AnswerInput,
-  Envelope,
-  EnvelopeInput,
-} from "../core/output.ts";
+import type { AnswerInput, Envelope, EnvelopeInput } from "../core/output.ts";
 import { buildEnvelope } from "../core/output.ts";
 import {
   type Action,

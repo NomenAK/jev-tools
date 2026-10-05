@@ -526,6 +526,5 @@ test("unjudged exact control leaves no verdict even with a clear head", () => {
     }),
     q3: { type: "unjudged", reason: "budget refused" } as Answer,
   });
-  assert.equal(line?.band, "unsure");
-  assert.match(line?.reason ?? "", /exact bool unjudged: budget refused/);
+  assert.equal(line?.unjudged, true);
 });

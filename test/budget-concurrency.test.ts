@@ -5,9 +5,12 @@ import { createJevClient } from "../src/jev/client.ts";
 import type { Question } from "../src/jev/types.ts";
 import { Session } from "../src/session.ts";
 
-// Each question is large enough to force its own request batch, so the client
-// fans the batches out concurrently through its pool.
-const big = "x".repeat(120_000);
+// Each question is large (~22k estimated tokens) but under the 30k
+// per-evaluation bound, so the client judges it; pairs fill a request batch
+// (~44k of 60k tokens) while a third would overflow it, so the client packs
+// the six questions into three batches and fans them out concurrently
+// through its pool.
+const big = "x".repeat(72_000);
 const questions: Record<string, Question> = Object.fromEntries(
   ["a", "b", "c", "d", "e", "f"].map((id) => [
     id,
@@ -52,7 +55,52 @@ test("JEV_TOOLS_MAX_USD is not overshot by concurrently admitted batches", async
   const unjudged = Object.values(result.ok ? result.answers : {}).filter(
     (answer) => answer.type === "unjudged",
   );
-  assert.equal(unjudged.length, 4);
+  assert.equal(unjudged.length, 2);
+});
+
+test("a question over the per-evaluation bound is unjudged without any HTTP request", async () => {
+  // ~36k estimated tokens > EVALUATION_MAX_TOKENS=30_000: the client refuses
+  // locally with a reason instead of sending a request the endpoint rejects.
+  const huge = "x".repeat(120_000);
+  let requests = 0;
+  const result = await client(() => requests++).judge(
+    {},
+    { big: { type: "bool", instructions: huge } },
+    {},
+  );
+  assert.equal(requests, 0);
+  assert.equal(result.ok, true);
+  assert.equal(result.ok ? result.answers.big?.type : undefined, "unjudged");
+  assert.match(
+    result.ok && result.answers.big?.type === "unjudged"
+      ? result.answers.big.reason
+      : "",
+    /per-evaluation budget/,
+  );
+});
+
+test("an oversized question group is still sent as one request", async () => {
+  // Three ~22k-token questions in one indivisible group total ~66k tokens,
+  // past the 60k request-packing budget; the group stays together and the
+  // endpoint decides, while each question clears the per-evaluation bound.
+  const trio = Object.fromEntries(
+    ["a", "b", "c"].map((id) => [
+      id,
+      { type: "bool", instructions: `${id} ${big}` },
+    ]),
+  );
+  let requests = 0;
+  const result = await client(() => requests++).judge({}, trio, {
+    groups: [["a", "b", "c"]],
+  });
+  assert.equal(requests, 1);
+  assert.equal(result.ok, true);
+  assert.ok(
+    Object.values(result.ok ? result.answers : {}).every(
+      (a) => a.type !== "unjudged",
+    ),
+    "every grouped question judged",
+  );
 });
 
 test("without a USD limit batches still run concurrently", async () => {
@@ -108,7 +156,7 @@ test("a request without reported cost still releases the USD gate", async () => 
     beforeRequest: (count) => session.admit(count),
   });
   assert.equal(judged.ok, true);
-  assert.equal(requests, 6);
+  assert.equal(requests, 3);
 });
 
 // Instrumented endpoint: counts requests and the peak number in flight, and
@@ -194,7 +242,7 @@ test("under a USD limit at most one request is ever in flight", async () => {
   const { stats, client: jev } = instrumented({ ms: 15, cost: 0.01 });
   const result = await jev.judge({}, questions, sessionOptions(session));
   assert.equal(result.ok, true);
-  assert.equal(stats.requests, 6);
+  assert.equal(stats.requests, 3);
   assert.equal(stats.peak, 1);
 });
 
@@ -249,7 +297,7 @@ test("failed and retried requests release the USD gate", async () => {
   );
   assert.equal(result.ok, true);
   assert.equal(stats.peak, 1);
-  assert.equal(stats.requests, 8);
+  assert.equal(stats.requests, 5);
 });
 
 test("aborting while waiting for the USD gate does not leak it", async () => {
