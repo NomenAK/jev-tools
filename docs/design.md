@@ -196,4 +196,4 @@ Optional native syntax parsing and file-search acceleration can be absent. Tools
 
 ## Architecture decisions
 
-See the [architecture decision records](adr/) for durable trade-offs. Start with the [README](../README.md) for installation and follow its six tool references for complete parameter contracts. MCP clients: [setup guide](mcp.md) and [agent instructions](agent-instructions.md).
+See the [architecture decision records](adr/) for durable trade-offs. Start with the [README](../README.md) for installation and follow its six tool references for complete parameter contracts. [How the tools work](internals/README.md) explains the pipelines stage by stage. MCP clients: [setup guide](mcp.md) and [agent instructions](agent-instructions.md).

@@ -9,6 +9,12 @@ modules are not a stable library API.
 
 ## [Unreleased]
 
+### Added
+
+- Documentation set: a user guide under `docs/guide/` (getting started, workflows,
+  troubleshooting), tool internals under `docs/internals/`, a code map in
+  `docs/architecture.md` and an index in `docs/README.md`.
+
 ## [0.3.0] - 2026-10-05
 
 ### Breaking

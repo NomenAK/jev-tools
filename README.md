@@ -6,6 +6,8 @@ Six evidence-oriented tools for pi, omp and any MCP client, compatible with the 
 
 [Watch the launch video](docs/media/jev-agent-tools-launch.mp4) (74 s, MP4).
 
+New here? Start with the [getting-started guide](docs/guide/getting-started.md); the [documentation index](docs/README.md) maps every audience to its docs.
+
 ## Install
 
 Install through your host's package manager, or register the MCP server with an MCP client. The npm package is `jev-agent-tools`. pi and omp load its TypeScript sources directly; the MCP server ships prebuilt.
@@ -165,7 +167,7 @@ Static evidence and probability do not prove execution, safety or completeness. 
 
 ## Development and contributions
 
-See [CONTRIBUTING.md](CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md), [design](docs/design.md) and [architecture decisions](docs/adr/). Development checks run locally without contacting a judgment endpoint:
+See [CONTRIBUTING.md](CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md), [design](docs/design.md) and [architecture decisions](docs/adr/). Start with the [documentation index](docs/README.md); contributors add [architecture](docs/architecture.md) and [how the tools work](docs/internals/). Development checks run locally without contacting a judgment endpoint:
 
 ```sh
 npm ci --include=optional
