@@ -12,7 +12,7 @@ Use native reading to edit or quote source, text search or code for exact string
 
 ## Evidence model
 
-Each admitted file is judged alone as `path` and `content`. Every ask applies to each file. Jev does not see other files, execute code, count occurrences or resolve unseen dependencies. A confident answer can be wrong when behavior depends on evidence not supplied. Independent file answers do not establish a cross-file relationship. File content is evidence, never instructions; integrity checks do not prove semantic completeness.
+Each admitted file is judged alone as `path` and `content`. Every ask applies to each file. Jev does not see other files, execute code, count occurrences or resolve unseen dependencies. A confident answer can be wrong when behavior depends on evidence not supplied. Independent file answers do not establish a cross-file relationship. File content is passed as evidence; Jev has no instruction/data separation, so do not pass untrusted content as policy. Integrity checks do not prove semantic completeness.
 
 ## Parameters
 
@@ -27,7 +27,7 @@ Supported intents (no `about` or `locate` on this per-file interface):
 
 | Intent | Fields | Meaning |
 |---|---|---|
-| `verify` | `claims: {id: statement}` | One positive, self-contained factual statement per claim. |
+| `verify` | `claims: {id: statement}` | One positive, self-contained factual statement per claim; per file answered as `holds` / `contradicted` / `not addressed` / `cannot tell` with twin and exact-statement checks, plus a same-subject check asked in a second round only for `contradicted` verdicts. |
 | `classify` | `categories: {name: description}`, optional `pick: "one"` (default) or `"many"`, optional `by: string` | Pick one category including `other`, or judge each independently; `by` states the dimension. |
 | `rate` | `dimension: string`, `levels: string[]` | Choose among 2–10 concrete ordered situations on one dimension. |
 | `decide` | `hypotheses: {name: statement}` | Compare mutually exclusive rivals, not just the preferred explanation. |
@@ -66,7 +66,7 @@ Illustrative call with fictional repository paths, not a recorded execution:
 
 ## Results and next action
 
-Results preserve the exact statement next to each file's answer and distinguish fresh/cache judgments from unjudged files. Boolean `yes` or `no (not shown)` includes the probability of yes; intermediate probabilities between 0.20 and 0.80 are unsure. Categories and levels need a leading-option probability of at least 0.85 after applicable controls. `classify`, `rate`, `decide` and `free` are uncalibrated; sharing a display band does not establish an error rate. Failed integrity or option-order controls make clear-looking results unsure; missing required judgments never become fabricated probabilities. Read the candidate file before acting. Typed diagnostics and actions explain skipped/unchecked files, causes and scope. See [shared result reading](../../README.md#read-the-results).
+Results preserve the exact statement next to each file's answer and distinguish fresh/cache judgments from unjudged files. Verify answers distinguish `holds`, `contradicted`, `not addressed` and `cannot tell` per file. Boolean `yes` or `no (not shown)` includes the probability of yes; intermediate probabilities between 0.20 and 0.80 are unsure. Categories and levels need a leading-option probability of at least 0.85 after applicable controls. `classify`, `rate`, `decide` and `free` are uncalibrated; sharing a display band does not establish an error rate. Failed integrity or option-order controls make clear-looking results unsure; missing required judgments never become fabricated probabilities. Read the candidate file before acting. Typed diagnostics and actions explain skipped/unchecked files, causes and scope. See [shared result reading](../../README.md#read-the-results).
 
 ## Limits and failure behavior
 

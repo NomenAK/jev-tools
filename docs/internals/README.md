@@ -13,7 +13,7 @@ Parameter contracts, install, configuration, and result marks live elsewhere and
 
 1. [Engine](engine.md) — the shared request lifecycle every tool uses: admission, state construction, question compilation, batching, HTTP client (rate limit, retries, cache, budgets), bands, render.
 2. Tool logic, in order of generality:
-   - [jev_ask](jev_ask.md) — one combined situation: references, import closure, command output, compiled intentions, order/exact-statement controls.
+   - [jev_ask](jev_ask.md) — one combined situation: references, import closure, command output, compiled intentions, order/exact-statement controls and a same-subject control asked only for `contradicted` verdicts.
    - [jev_ask_files](jev_ask_files.md) — the same asks judged independently per file.
    - [jev_find_files](jev_find_files.md) — name ranking, excerpt judging, entry-point pointer.
    - [jev_locate_in_file](jev_locate_in_file.md) — section/window choice inside one large file.
@@ -34,7 +34,7 @@ flowchart TD
     B --> G{"Session + per-call\nbudgets admit?"}
     G -- "no" --> R1["refusal line\n(src/core/output.ts: buildEnvelope)"]
     G -- "yes" --> H["HTTP client\n(src/jev/client.ts: judge;\nsrc/jev/pool.ts: rate limit;\ncache; retries; split)"]
-    H --> C["Controls\n(twins, reverse order,\nwitnesses, exact-statement)"]
+    H --> C["Controls\n(twins, reverse order,\nwitnesses, exact-statement,\nsame-subject)"]
     C --> D["Bands\n(src/core/output.ts: askBand)"]
     D --> R2["Render\n(src/render.ts: renderEnvelope)"]
 ```

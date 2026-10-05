@@ -12,7 +12,7 @@ Use native `git diff` execution to read the diff, [jev_select_tests](jev_select_
 
 ## Evidence model
 
-Changed declarations, slices, files or hunks become before/after evidence units. Tests are supporting evidence, never units to judge. Preset questions are fixed in code; the caller chooses a check, not raw questions. Jev does not run the code. Verbatim specification text is evidence, not instructions.
+Changed declarations, slices, files or hunks become before/after evidence units. Tests are supporting evidence, never units to judge. Preset questions are fixed in code; the caller chooses a check, not raw questions. Jev does not run the code. Verbatim specification text is passed as evidence; Jev has no instruction/data separation, so specification wording can sway an answer.
 
 ## Parameters
 
@@ -31,7 +31,7 @@ Custom dimensions and `only` apply to risk and are ignored by docs/spec. Unknown
 
 ### risk
 
-Ask built-in correctness, security, compatibility and reliability questions, then grade flagged risks by severity. Optional witnesses check the setup with decoy and known-positive evidence. Failed witnesses make findings unsure with raw values and a reason.
+Ask built-in correctness, security, compatibility and reliability questions, then grade flagged risks by severity — one severity request per unit, with each flagged dimension scored 0–3 as its own question. Optional witnesses check the setup with decoy and known-positive evidence. Failed witnesses make findings unsure with raw values and a reason.
 
 For replaced member accesses, separate local-caller checks inspect statically resolved tracked callers, including import aliases, and their imported providers. They account for coordinated caller/provider edits. Literal-name discovery cannot cover dynamic access that never names the target. Unknown providers, partial units and metaprogramming remain visibly unchecked. Local checks run once per eligible unit, not once per caller; local evidence limits do not invalidate the separate risk matrix.
 

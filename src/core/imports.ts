@@ -1,4 +1,5 @@
 import { posix } from "node:path";
+import { IMPORT_FROM_LOOKAHEAD_TOKENS } from "../constants.ts";
 import { type LexicalSource, tokenize as tokens } from "./lexical.ts";
 
 export interface ImportSource {
@@ -545,7 +546,9 @@ export function createImportGraphBuilder(
           else {
             for (
               let j = i + 1;
-              j < ts.length && ts[j]?.value !== ";" && j < i + 100;
+              j < ts.length &&
+              ts[j]?.value !== ";" &&
+              j < i + IMPORT_FROM_LOOKAHEAD_TOKENS;
               j++
             ) {
               if (ts[j]?.value === "from" && ts[j + 1]?.string) {

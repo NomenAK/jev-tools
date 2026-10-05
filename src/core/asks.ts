@@ -5,6 +5,7 @@ import {
   CHOICE_MAX_OPTIONS,
   ORDER_DISAGREE_MIN,
   ORDER_REVERSE_BELOW,
+  SAME_SUBJECT_MIN,
   SCORE_MAX_LEVELS,
   SCORE_MIN_LEVELS,
 } from "../constants.ts";
@@ -39,6 +40,11 @@ interface Reading {
   kind: "verify" | "decide" | "plain";
   twin?: string;
   controls?: Record<string, string>;
+  // Same-subject control id: kept out of controls and out of the
+  // first-round group. Tools judge it in a second round only for
+  // contradicted first-round verdicts; a missing answer never affects
+  // holds/not_addressed, and demotes only contradicted.
+  sameSubject?: string;
   uncalibrated: boolean;
   attributable?: boolean;
   among?: string[];
@@ -85,7 +91,9 @@ function canonical(criteria: Record<string, string>): Record<string, string> {
     [...first, ...middle, ...last].map((k) => [k, criteria[k] ?? ""]),
   );
 }
-function reverse(q: Extract<Question, { type: "choice" }>): Question {
+function reverse(
+  q: Extract<Question, { type: "choice" }>,
+): Extract<Question, { type: "choice" }> {
   const keys = Object.keys(q.criteria);
   const middle = keys
     .filter(
@@ -106,6 +114,14 @@ function reverse(q: Extract<Question, { type: "choice" }>): Question {
       }),
     ),
   };
+}
+// Reversal permutes only substantive options, so with 0 or 1 of them the
+// reversed question is byte-identical and the client cache would answer it
+// from the first run: there is no order risk to check, so no twin is needed.
+function reversesOrder(q: Extract<Question, { type: "choice" }>): boolean {
+  const keys = Object.keys(q.criteria);
+  const reversed = Object.keys(reverse(q).criteria);
+  return keys.some((key, index) => key !== reversed[index]);
 }
 export function compileAsks(
   input: unknown,
@@ -186,10 +202,10 @@ export function compileAsks(
           ? "content"
           : "the state";
     const group: string[] = [];
-    const add = (q: Question) => {
+    const add = (q: Question, grouped = true) => {
       const id = `q${++questionCount}`;
       plan.questions[id] = q;
-      group.push(id);
+      if (grouped) group.push(id);
       return id;
     };
     const choice = (
@@ -242,14 +258,6 @@ export function compileAsks(
       for (const [claim, s] of Object.entries(value.claims)) {
         lint(claim, s, true);
         const label = `${claim} ${JSON.stringify(s)}`;
-        if (surface === "files") {
-          reading(
-            add(bool(`Is the following statement true of ${about}: ${s}`)),
-            label,
-            "verify",
-          );
-          continue;
-        }
         const q = choice(
           `For ${about}, which issue describes this exact statement: ${s}`,
           {
@@ -265,7 +273,20 @@ export function compileAsks(
         const check = add(
           bool(`Is the following statement true of ${about}: ${s}`),
         );
-        reading(id, label, "verify", { twin, controls: { exact: check } });
+        // Second-round control: compiled here so the question text is fixed,
+        // but kept out of the first-round group. Tools judge it only for
+        // readings whose first round is a contradicted verdict.
+        const same = add(
+          bool(
+            `Does the evidence in ${about} that bears on this statement concern the same subject (same entity, file, version, run and moment) as the statement: ${s}`,
+          ),
+          false,
+        );
+        reading(id, label, "verify", {
+          twin,
+          controls: { exact: check },
+          sameSubject: same,
+        });
       }
     } else if (value.intent === "decide" || value.intent === "classify") {
       const criteria =
@@ -460,6 +481,97 @@ function merged(p: Record<string, number>, verify: boolean) {
 function top(p: Record<string, number>): string {
   return Object.keys(p).sort((a, b) => (p[b] ?? 0) - (p[a] ?? 0))[0] ?? "other";
 }
+interface FirstRoundChoice {
+  original: Record<string, number>;
+  second: Record<string, number> | undefined;
+  p: Record<string, number>;
+  values: Record<string, number>;
+  head: string;
+  mass: number;
+  band: AnswerInput["band"];
+  reason: string | undefined;
+}
+// First-round head and band for a choice reading, up to but excluding the
+// same-subject and reverse-order controls. Shared by readAsks and
+// sameSubjectQuestions so the second round fires exactly for contradicted
+// verdicts. Undefined when the first round cannot name a head.
+function firstRoundChoice(
+  r: Reading,
+  answers: Record<string, Answer>,
+  reversed: Record<string, Answer>,
+): FirstRoundChoice | undefined {
+  const answer = answers[r.id];
+  const members = [
+    r.id,
+    ...(r.twin ? [r.twin] : []),
+    ...Object.values(r.controls ?? {}),
+  ];
+  if (members.some((id) => !answers[id] || answers[id]?.type === "unjudged"))
+    return undefined;
+  if (answer?.type !== "choice") return undefined;
+  const original = answer.probabilities;
+  const second = probabilities(r.twin ? answers[r.twin] : reversed[r.id]);
+  const p = second
+    ? Object.fromEntries(
+        Object.keys(original).map((k) => [
+          k,
+          ((original[k] ?? 0) + (second[k] ?? 0)) / 2,
+        ]),
+      )
+    : original;
+  const values = merged(p, r.kind === "verify");
+  let head = top(values);
+  let mass = values[head] ?? 0;
+  let band: AnswerInput["band"] =
+    (p.cannot_tell ?? 0) >= CANNOT_TELL_MIN
+      ? "abstain"
+      : mass >= BAND_CHOICE_VERDICT_MIN
+        ? "verdict"
+        : "unsure";
+  if (band === "abstain") {
+    head = "cannot_tell";
+    mass = p.cannot_tell ?? 0;
+  }
+  let reason: string | undefined;
+  const exact = r.controls?.exact ? answers[r.controls.exact] : undefined;
+  if (
+    r.kind === "verify" &&
+    exact?.type === "bool" &&
+    ((head === "holds" && exact.p < 0.5) ||
+      (head === "contradicted" && exact.p >= 0.5) ||
+      (["not_addressed", "cannot_tell"].includes(head) &&
+        exact.p >= BAND_BOOL_YES_MIN))
+  ) {
+    band = "unsure";
+    reason = `scope/evidence disagreement: issues ${head} ${mass.toFixed(2)}, bool ${exact.p >= 0.5 ? "yes" : "no"} ${exact.p.toFixed(2)}; no verdict: ${r.missing}`;
+  }
+  if (r.kind === "decide") {
+    const entries = Object.entries(r.controls ?? {});
+    const conflict = entries.find(([k, id]) => {
+      const a = answers[id];
+      return (
+        a?.type === "bool" &&
+        ((k === head && a.p < 0.5) ||
+          (["other", "cannot_tell"].includes(head) && a.p >= BAND_BOOL_YES_MIN))
+      );
+    });
+    if (conflict) {
+      const a = answers[conflict[1]];
+      if (a?.type === "bool") {
+        band = "unsure";
+        reason = `scope/evidence disagreement: choice ${head} ${mass.toFixed(2)}, ${conflict[0]} ${JSON.stringify(r.options?.[conflict[0]])} bool ${a.p >= 0.5 ? "yes" : "no"} ${a.p.toFixed(2)}; no verdict: ${r.missing}`;
+      }
+    }
+  }
+  if (
+    Object.values(r.controls ?? {}).some((id) => answers[id]?.type !== "bool")
+  ) {
+    band = "unsure";
+    reason =
+      "coherence control unjudged; no verdict: rerun with decisive evidence";
+  }
+  return { original, second, p, values, head, mass, band, reason };
+}
 export function reverseQuestions(
   plan: CompiledAsks,
   answers: Record<string, Answer>,
@@ -472,9 +584,30 @@ export function reverseQuestions(
       !r.twin &&
       q?.type === "choice" &&
       p &&
+      reversesOrder(q) &&
       Math.max(...Object.values(p)) < ORDER_REVERSE_BELOW
     )
       questions[r.id] = reverse(q);
+  }
+  return questions;
+}
+// Second-round controls for contradicted first-round verdicts, in the same
+// request structure as reverseQuestions: one extra judge call for all such
+// readings, on the same state. Tools count the call against max_calls; a
+// refused or failed round leaves the control unjudged and readAsks demotes.
+export function sameSubjectQuestions(
+  plan: CompiledAsks,
+  answers: Record<string, Answer>,
+  reversed: Record<string, Answer> = {},
+): Record<string, Question> {
+  const questions: Record<string, Question> = {};
+  for (const r of plan.readings) {
+    if (r.kind !== "verify" || !r.sameSubject) continue;
+    const first = firstRoundChoice(r, answers, reversed);
+    if (first?.head === "contradicted" && first.band === "verdict") {
+      const question = plan.questions[r.sameSubject];
+      if (question) questions[r.sameSubject] = question;
+    }
   }
   return questions;
 }
@@ -513,10 +646,39 @@ export function readAsks(
     }
     if (!answer || answer.type === "unjudged") continue;
     if (answer.type !== "choice") {
+      const question = plan.questions[r.id];
+      const levels =
+        r.levels ??
+        (question?.type === "score" ? question.criteria : undefined);
       const level =
         answer.type === "score"
           ? r.levels?.[Math.round(answer.score)]
           : undefined;
+      let reason: string | undefined;
+      if (answer.type === "score" && levels) {
+        const peak = Math.max(0, ...Object.values(answer.probabilities));
+        // Unsure path only: a verdict's leading mass already pins the score,
+        // while a split unsure mass makes the expected score misleading.
+        if (peak < BAND_CHOICE_VERDICT_MIN) {
+          const rank = (key: string) => {
+            const at = levels.indexOf(key);
+            return at >= 0 ? at : /^\d+$/.test(key) ? Number(key) : -1;
+          };
+          const [topA, topB] = Object.entries(answer.probabilities).sort(
+            (a, b) => b[1] - a[1],
+          );
+          const ia = topA ? rank(topA[0]) : -1;
+          const ib = topB ? rank(topB[0]) : -1;
+          if (
+            ia >= 0 &&
+            ib >= 0 &&
+            ia < levels.length &&
+            ib < levels.length &&
+            Math.abs(ia - ib) > 1
+          )
+            reason = `split between non-adjacent levels ${ia} and ${ib}`;
+        }
+      }
       result.push({
         label: level ? `${r.label} ${JSON.stringify(level)}` : r.label,
         source: answer.source,
@@ -537,62 +699,29 @@ export function readAsks(
                 probability: { status: "known" as const, value },
               })),
         uncalibrated: r.uncalibrated,
+        ...(reason ? { reason } : {}),
       });
       continue;
     }
-    const original = answer.probabilities;
-    const second = probabilities(r.twin ? answers[r.twin] : reversed[r.id]);
-    const p = second
-      ? Object.fromEntries(
-          Object.keys(original).map((k) => [
-            k,
-            ((original[k] ?? 0) + (second[k] ?? 0)) / 2,
-          ]),
-        )
-      : original;
-    const values = merged(p, r.kind === "verify");
-    let head = top(values);
-    let mass = values[head] ?? 0;
-    let band: AnswerInput["band"] =
-      (p.cannot_tell ?? 0) >= CANNOT_TELL_MIN
-        ? "abstain"
-        : mass >= BAND_CHOICE_VERDICT_MIN
-          ? "verdict"
-          : "unsure";
-    if (band === "abstain") {
-      head = "cannot_tell";
-      mass = p.cannot_tell ?? 0;
-    }
-    let reason: string | undefined;
-    const exact = r.controls?.exact ? answers[r.controls.exact] : undefined;
-    if (
-      r.kind === "verify" &&
-      exact?.type === "bool" &&
-      ((head === "holds" && exact.p < 0.5) ||
-        (head === "contradicted" && exact.p >= 0.5) ||
-        (["not_addressed", "cannot_tell"].includes(head) &&
-          exact.p >= BAND_BOOL_YES_MIN))
-    ) {
-      band = "unsure";
-      reason = `scope/evidence disagreement: issues ${head} ${mass.toFixed(2)}, bool ${exact.p >= 0.5 ? "yes" : "no"} ${exact.p.toFixed(2)}; no verdict: ${r.missing}`;
-    }
-    if (r.kind === "decide") {
-      const entries = Object.entries(r.controls ?? {});
-      const conflict = entries.find(([k, id]) => {
-        const a = answers[id];
-        return (
-          a?.type === "bool" &&
-          ((k === head && a.p < 0.5) ||
-            (["other", "cannot_tell"].includes(head) &&
-              a.p >= BAND_BOOL_YES_MIN))
-        );
-      });
-      if (conflict) {
-        const a = answers[conflict[1]];
-        if (a?.type === "bool") {
-          band = "unsure";
-          reason = `scope/evidence disagreement: choice ${head} ${mass.toFixed(2)}, ${conflict[0]} ${JSON.stringify(r.options?.[conflict[0]])} bool ${a.p >= 0.5 ? "yes" : "no"} ${a.p.toFixed(2)}; no verdict: ${r.missing}`;
-        }
+    const first = firstRoundChoice(r, answers, reversed);
+    if (!first) continue;
+    const { original, second, p, values } = first;
+    let { head, mass, band, reason } = first;
+    // Same-subject control only ever demotes a contradicted verdict, and only
+    // the second round judges it: the control targets false contradictions
+    // drawn from neighbouring-subject evidence (another entity, file,
+    // version, run or moment), while false support is guarded by the
+    // exact-statement control above — so holds is never re-examined here. A
+    // missing or unjudged control demotes too: without it the contradiction
+    // is unproven.
+    if (r.kind === "verify" && head === "contradicted" && band === "verdict") {
+      const same = r.sameSubject ? answers[r.sameSubject] : undefined;
+      if (same?.type !== "bool" || same.p < SAME_SUBJECT_MIN) {
+        band = "unsure";
+        reason =
+          same?.type === "bool"
+            ? `evidence may concern a different subject (same-subject p ${same.p.toFixed(2)} below ${SAME_SUBJECT_MIN}); no verdict: ${r.missing}`
+            : `same-subject control unjudged${same?.type === "unjudged" ? `: ${same.reason}` : ""}; no verdict: ${r.missing}`;
       }
     }
     if (

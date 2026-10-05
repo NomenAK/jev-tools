@@ -259,6 +259,103 @@ test("absent usage preserves normalized answers and the served model", async () 
   assert.equal(judgment.usage, undefined);
 });
 
+test("reversed choice order misses the cache and returns the second response", async () => {
+  const bodies: string[] = [];
+  const payloads = [
+    {
+      choice: "a",
+      confidence: 0.9,
+      probabilities: { a: 0.9, b: 0.1 },
+    },
+    {
+      choice: "b",
+      confidence: 0.9,
+      probabilities: { a: 0.1, b: 0.9 },
+    },
+  ];
+  const client = createJevClient(
+    { url: "http://simulated", apiKey, model: "requested-model" },
+    {
+      fetch: (async (_url, options) => {
+        bodies.push(options?.body as string);
+        return Response.json({ answers: { q1: payloads[bodies.length - 1] } });
+      }) as typeof fetch,
+      now: () => 0,
+      sleep: () => Promise.resolve(),
+    },
+  );
+  const instructions = "Pick the matching option";
+  const first = await client.judge(state, {
+    q1: { type: "choice", instructions, criteria: { a: "A", b: "B" } },
+  });
+  const second = await client.judge(state, {
+    q1: { type: "choice", instructions, criteria: { b: "B", a: "A" } },
+  });
+  assert.equal(bodies.length, 2);
+  assert.equal(
+    first.ok && first.answers.q1?.type === "choice" && first.answers.q1.choice,
+    "a",
+  );
+  assert.equal(
+    second.ok &&
+      second.answers.q1?.type === "choice" &&
+      second.answers.q1.choice,
+    "b",
+  );
+});
+
+test("the api key never appears in serialized request bodies", async () => {
+  const secret = 'sec"ret\\key';
+  const bodies: string[] = [];
+  const client = createJevClient(
+    { url: "http://simulated", apiKey: secret, model: "requested-model" },
+    {
+      fetch: (async (_url, options) => {
+        bodies.push(options?.body as string);
+        return Response.json({ answers: { q1: { noul: 0.5 } } });
+      }) as typeof fetch,
+      now: () => 0,
+      sleep: () => Promise.resolve(),
+    },
+  );
+  const escaped = JSON.stringify(secret).slice(1, -1);
+  const judgment = await client.judge(
+    { text: `printenv shows ${secret} and pasted JSON ${escaped}` },
+    { q1: { type: "bool", instructions: `is ${secret} present?` } },
+  );
+  assert.equal(judgment.ok, true);
+  assert.equal(bodies.length, 1);
+  assert.equal(bodies[0]?.includes(secret), false);
+  assert.equal(bodies[0]?.includes(escaped), false);
+  assert.match(bodies[0] ?? "", /\[redacted\]/);
+});
+
+test("a short configured key is still scrubbed from payloads and errors", async () => {
+  const secret = "abc";
+  const bodies: string[] = [];
+  const client = createJevClient(
+    { url: "http://simulated", apiKey: secret, model: "requested-model" },
+    {
+      fetch: (async (_url, options) => {
+        bodies.push(options?.body as string);
+        return new Response(`Denied ${secret}`, { status: 403 });
+      }) as typeof fetch,
+      now: () => 0,
+      sleep: () => Promise.resolve(),
+    },
+  );
+  const judgment = await client.judge(
+    { text: `token ${secret} leaked` },
+    { q1: { type: "bool", instructions: "present?" } },
+  );
+  assert.equal(judgment.ok, false);
+  assert.equal(bodies.length, 1);
+  assert.equal(bodies[0]?.includes(secret), false);
+  assert.match(bodies[0] ?? "", /\[redacted\]/);
+  assert.equal(judgment.error.includes(secret), false);
+  assert.match(judgment.error, /\[redacted\]/);
+});
+
 test("nominal request crosses a real HTTP endpoint", async () => {
   let captured = "";
   const server = createServer(async (req, res) => {

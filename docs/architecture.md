@@ -78,6 +78,7 @@ Host differences beyond step 4: `hostUsage` (`src/adapters/usage.ts`) suppresses
 | `src/tools/docs-check.ts` | `runDocsCheck` seam (also used by run-end); no tool registration. |
 | `src/tools/spec-check.ts` | `runSpecCheck` seam; no tool registration. |
 | `src/tools/find.ts` | `createFindFilesTool` (`jev_find_files`): rank → excerpt → pointer. |
+| `src/tools/judge-options.ts` | `createJudgeOptions` (`gate`, `budget`, `spent`/`reserve`) / `finishToolCall`: shared per-call budget gate and envelope finalization used by every tool and seam. |
 | `src/tools/locate.ts` | `createLocateTool` (`jev_locate_in_file`): outline → refine → pointer. |
 | `src/tools/select-tests.ts` | `createSelectTestsTool` (`jev_select_tests`): discovery → evidence → pointers → commands. |
 
@@ -91,6 +92,7 @@ Host differences beyond step 4: `hostUsage` (`src/adapters/usage.ts`) suppresses
 | `src/core/asks.ts` | `Ask` union; `compileAsks` / `readAsks` / `reverseQuestions`: intent compilation and control readings. |
 | `src/core/batches.ts` | `prepareBatches` / `splitGroups`: token-budgeted request batching. |
 | `src/core/command-output.ts` | `cleanOutput` / `lineShape` / `createRarityCompressor` / `outputChunks` / `selectOutput` / `failureTargets`. |
+| `src/core/command-state.ts` | `needsPassageFinding` / `planPassageFinding` / `fitOutputToBudget`: command-output budgeting decisions. |
 | `src/core/diff.ts` | `parseDiff` (paths from NUL git metadata, never patch headers); `isTestFile`; hunk types. |
 | `src/core/docs.ts` | `docSentences` / `collectDocsCandidates`: sentence splitting and doc-to-declaration attribution. |
 | `src/core/find.ts` | `contentWords` / `findKeywords` / `rankFiles` / `retainFiles` / `createExcerptCollector`. |
@@ -110,6 +112,7 @@ Host differences beyond step 4: `hostUsage` (`src/adapters/usage.ts`) suppresses
 | `src/core/test-commands.ts` | `buildRunnerCommands`: selections to per-runner invocations. |
 | `src/core/test-coverage.ts` | `prepareCoverageWitnesses`: synthetic witness questions for residual batches. |
 | `src/core/test-discovery.ts` | `Framework` / `TestScenario` / `TestEntry` / `Discovery`: static discovery vocabulary. |
+| `src/core/test-discovery/` | `types` (vocabulary) / `shared` (literal, glob, token parsing) / `javascript` / `python` / `go` (per-family scenario extractors). |
 | `src/core/test-evidence.ts` | `TestEvidence`: import-graph reachability per test entry. |
 | `src/core/test-state.ts` | `prepareTestStates`: setup-mask partition of oversized test states. |
 | `src/core/truncate.ts` | `truncate`: surrogate-safe prefix cut. |
@@ -129,7 +132,7 @@ Host differences beyond step 4: `hostUsage` (`src/adapters/usage.ts`) suppresses
 | `src/adapters/find.ts` | `prefilter`: git listing narrowed via native `fff` (rg fallback). |
 | `src/adapters/git.ts` | Diff/evidence collection: blobs via `parseDiff` + `buildUnits`. |
 | `src/adapters/git-base.ts` | `resolveBase`: `base` argument to merge-base with HEAD (default `HEAD`). |
-| `src/adapters/git-inventory.ts` | `shareGitInventory`: snapshot-shared `ls-files` within one call. |
+| `src/adapters/git-inventory.ts` | `shareGitInventory`: snapshot-shared `ls-files` within one call. `shareGitTree`: shared `rev-parse --show-toplevel` and base `ls-tree` for the exact argv the diff and caller collectors use; any other form or config setting spawns again. |
 | `src/adapters/locate-file.ts` | `readLocateFile`: bounded whole-text or windowed-outline read. |
 | `src/adapters/output-lines.ts` | `outputLines`: line streaming with per-line clipping and omission accounting. |
 | `src/adapters/risk-callers.ts` | `loadCallerParser` / `collectRiskCallers`: parser plus filesystem-backed caller collection. |
@@ -144,7 +147,7 @@ Host differences beyond step 4: `hostUsage` (`src/adapters/usage.ts`) suppresses
 | File | Responsibility |
 |---|---|
 | `src/presets/docs.ts` | `prepareDocsCheck` / `readDocsJudgment`: status + sentence-pointer questions. |
-| `src/presets/risk.ts` | Builtin dimensions, `prepareRiskMatrix`, `prepareRiskSeverity`, witness-health evaluation. |
+| `src/presets/risk.ts` | Builtin dimensions, `prepareRiskMatrix`, `prepareSeverityBatch` (one severity request per unit), witness-health evaluation. |
 | `src/presets/spec.ts` | `prepareSpecCheck` / `readSpecJudgment`: per-`REQ-…` conformance + drift. |
 | `src/presets/witnesses.ts` | `buildWitnessUnits` / `buildCoverageWitnessUnits` / `evaluateBatchWitnessHealth`. |
 
@@ -152,7 +155,7 @@ Host differences beyond step 4: `hostUsage` (`src/adapters/usage.ts`) suppresses
 
 | File | Responsibility |
 |---|---|
-| `src/texts/ask.ts` | `ASK_DESCRIPTION`, `COMMAND_LIMIT_NOTICE`. |
+| `src/texts/ask.ts` | `ASK_DESCRIPTION`. |
 | `src/texts/ask-files.ts` | `ASK_FILES_DESCRIPTION`. |
 | `src/texts/check-diff.ts` | `CHECK_DIFF_DESCRIPTION`. |
 | `src/texts/configuration.ts` | `NOT_CONFIGURED` shared message. |

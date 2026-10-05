@@ -6,14 +6,9 @@ import {
 import { collectFiles } from "../adapters/files.ts";
 import { collectUnits } from "../adapters/git.ts";
 import { resolveBase } from "../adapters/git-base.ts";
-import {
-  CHOICE_MAX_OPTIONS,
-  STATE_MAX_CHARS,
-  TIMEOUT_MS,
-} from "../constants.ts";
+import { STATE_MAX_CHARS, TIMEOUT_MS } from "../constants.ts";
 import {
   type AnswerInput,
-  type BudgetRefusal,
   buildEnvelope,
   type Envelope,
   type Limitation,
@@ -32,6 +27,7 @@ import {
 import type { ToolDependencies } from "../runtime.ts";
 import { NOT_CONFIGURED } from "../texts/configuration.ts";
 import { ReviewReport, reportMetrics } from "./review-report.ts";
+import { createJudgeOptions } from "./judge-options.ts";
 
 export interface SpecCheckResult {
   ok: boolean;
@@ -67,8 +63,11 @@ export async function runSpecCheck(
   const findings: SpecFinding[] = [];
   const limitations: Limitation[] = [];
   const unchecked: string[] = [];
-  let budget: BudgetRefusal | undefined;
-  let sent = 0;
+  const { options, budget } = createJudgeOptions({
+    signal: input.signal,
+    maxCalls: input.maxCalls,
+    session: deps.runtime.session,
+  });
   let incomplete = false;
   let emptyBase: string | undefined;
   const finish = (
@@ -103,9 +102,9 @@ export async function runSpecCheck(
           : limitations,
       unchecked,
       refusal,
-      budget,
+      budget: budget(),
       ...(!refusal &&
-      !budget &&
+      !budget() &&
       !unchecked.length &&
       !findings.length &&
       emptyBase === undefined &&
@@ -292,42 +291,32 @@ export async function runSpecCheck(
   }
   incomplete = report.missingWork;
   const state = withEvidenceContext(prepared.state, evidenceContext);
-  if (
-    units.length + 1 > CHOICE_MAX_OPTIONS ||
-    JSON.stringify(state).length > STATE_MAX_CHARS
-  )
+  if (JSON.stringify(state).length > STATE_MAX_CHARS)
     return finish(
-      `State or spec pointer exceeds the limits; compare against a closer base (STATE_MAX_CHARS=${STATE_MAX_CHARS}).`,
+      `State exceeds the limits; compare against a closer base (STATE_MAX_CHARS=${STATE_MAX_CHARS}).`,
       "evidence_too_large",
     );
+  // An omitted drift pointer stays unjudged below; requirements are still judged.
+  if (!Object.hasOwn(prepared.questions, "drift"))
+    limitations.push({
+      fact: `drift pointer omitted: ${units.length} changed units exceed the choice option cap including none`,
+      next: "read the changed units for behavior absent from the specification",
+    });
   if (!units.length) return finish();
   const judgment = await deps.client.judge(state, prepared.questions, {
     signal: input.signal,
+    ...options,
     ...deps.runtime.session.requestGate(),
     admissionCause: () =>
-      budget?.kind === "session" ? "session_budget" : "call_budget",
-    beforeRequest(questionCount) {
-      if (input.maxCalls !== undefined && sent >= input.maxCalls) {
-        budget = {
-          kind: "max_calls",
-          message: `max_calls=${input.maxCalls} reached`,
-        };
-        return { ok: false, error: budget.message };
-      }
-      const admitted = deps.runtime.session.admit(questionCount);
-      if (!admitted.ok) budget = { kind: "session", message: admitted.error };
-      else sent++;
-      return admitted;
-    },
-    onUsage: (usage) => deps.runtime.session.recordUsage(usage),
+      budget()?.kind === "session" ? "session_budget" : "call_budget",
   });
   judgments.push(judgment);
   if (!judgment.ok)
     report.failure(
       judgment,
       reportIds,
-      budget
-        ? budget.kind === "session"
+      budget()
+        ? budget().kind === "session"
           ? "session_budget"
           : "call_budget"
         : undefined,

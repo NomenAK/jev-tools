@@ -136,16 +136,89 @@ test("all asks share each exact file state, parallel judgments obey max_calls an
       ],
     );
     const text = result.content[0]?.text ?? "";
-    assert.equal(
-      result.details.result.items.filter(
-        (item) => item.treatment === "not_judged",
-      ).length,
-      2,
-    );
-    assert.equal(result.details.result.execution, "partial");
-    assert.equal(result.details.result.accounting.httpAttempts, 2);
-    assert.equal(result.details.result.accounting.questionsSent, 4);
+    assert.match(text, /c1.*validates tokens.*no \(not shown\)/);
+    assert.match(text, /unchecked: c.ts/);
+    assert.match(text, /2 calls · 12 questions/);
     assert.doesNotMatch(text, /export const/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("contradicted files verdicts judge the same-subject control in a second round", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "jev-ask-files-"));
+  try {
+    await writeFile(join(cwd, "a.ts"), "export const value=1;");
+    const rounds: string[][] = [];
+    const client: JevClient = {
+      clearCache() {},
+      async judge(_state, questions, options) {
+        options?.beforeRequest?.(Object.keys(questions).length);
+        rounds.push(Object.keys(questions));
+        if (
+          Object.values(questions).some((question) =>
+            question.instructions.includes("same subject"),
+          )
+        )
+          return {
+            ok: true,
+            calls: 1,
+            questions: 1,
+            answers: Object.fromEntries(
+              Object.keys(questions).map((id) => [
+                id,
+                { type: "bool", source: "fresh" as const, p: 0.9 },
+              ]),
+            ),
+          };
+        const contradicted = (peak: number) => ({
+          type: "choice" as const,
+          source: "fresh" as const,
+          choice: "contradicted",
+          confidence: 0.95,
+          probabilities: {
+            holds: 0.02,
+            contradicted: peak,
+            not_addressed: 0.03,
+            cannot_tell: 0.02,
+          },
+        });
+        return {
+          ok: true,
+          calls: 1,
+          questions: 3,
+          answers: {
+            q1: contradicted(0.93),
+            q2: contradicted(0.93),
+            q3: { type: "bool", source: "fresh" as const, p: 0.02 },
+          },
+        };
+      },
+    };
+    const host = detectHost({});
+    const result = await createAskFilesTool({
+      client,
+      host,
+      runtime: { session: new Session({}), guide: new Guide(host) },
+      exec: noGit,
+    }).execute(
+      "1",
+      {
+        paths: ["a.ts"],
+        asks: {
+          intent: "verify",
+          claims: { c1: "`content` validates tokens" },
+        },
+      },
+      undefined,
+      undefined,
+      { cwd },
+    );
+    // Three first-round questions, then the same-subject control alone.
+    assert.deepEqual(rounds, [["q1", "q2", "q3"], ["q4"]]);
+    const text = result.content[0]?.text ?? "";
+    assert.match(text, /contradicted \(0\.93\)/);
+    assert.doesNotMatch(text, /unsure/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

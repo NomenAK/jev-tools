@@ -3,3 +3,9 @@ __pycache__/
 node_modules/
 /dist/
 /.scratch-find-*/
+
+# Local coding-agent harness imported from the private lab.
+/.omp/
+/AGENTS.md
+/CONTEXT.md
+/docs/agents/

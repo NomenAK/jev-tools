@@ -37,7 +37,7 @@ Illustrative call with a fictional repository path, not a recorded execution:
 
 ## Results and next action
 
-A result names `path:start-end`, a label, probability and the next read. Above 0.7 an unmarked range is a verdict: read it. From 0.4 through 0.7, unsure lists the two best ranges by probability: read both, not an arbitrary next section. Below 0.4 the tool narrows to three leading candidates plus none and judges again, retaining the original unsure band. Option-order sensitivity can also leave the result unsure. `none` means no supplied section fits: search elsewhere or clarify the goal. See [shared result reading](../../README.md#read-the-results).
+A result names `path:start-end`, a label, probability and the next read. A leading probability at or above 0.7 is a verdict: read it. Otherwise the result is unsure listing the two best ranges by probability: read both, not an arbitrary next section. Option-order sensitivity can also leave the result unsure. `none` means no supplied section fits: search elsewhere or clarify the goal. See [shared result reading](../../README.md#read-the-results).
 
 The versioned report preserves actual primary/control values and their fresh/cache source. Missing required control answers produce unjudged work rather than a synthesized range or probability. Typed diagnostics retain parsing/window omissions and native next actions, including searching elsewhere for a judged `none`.
 

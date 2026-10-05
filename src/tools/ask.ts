@@ -20,8 +20,6 @@ import {
   ASK_NOTE_MAX_CHARS,
   ASK_TIMEOUT_MAX_S,
   ASK_TIMEOUT_S,
-  OUTPUT_CHUNK_CHARS,
-  OUTPUT_FIND_MAX_CALLS,
   OUTPUT_SHAPE_MAX_COUNT,
   STATE_MAX_CHARS,
 } from "../constants.ts";
@@ -31,19 +29,23 @@ import {
   blockedAskReadings,
   resolveAskReferences,
 } from "../core/ask-references.ts";
-import { compileAsks, readAsks, reverseQuestions } from "../core/asks.ts";
-import { outputChunks, selectOutput } from "../core/command-output.ts";
+import {
+  compileAsks,
+  readAsks,
+  reverseQuestions,
+  sameSubjectQuestions,
+} from "../core/asks.ts";
+import {
+  fitOutputToBudget,
+  needsPassageFinding,
+  planPassageFinding,
+} from "../core/command-state.ts";
 import {
   createImportGraphBuilder,
   type ImportSource,
 } from "../core/imports.ts";
 import { checkIntegrity } from "../core/integrity.ts";
-import type {
-  AnswerInput,
-  BudgetRefusal,
-  EnvelopeInput,
-} from "../core/output.ts";
-import { buildEnvelope } from "../core/output.ts";
+import type { AnswerInput, EnvelopeInput } from "../core/output.ts";
 import {
   type Action,
   answerItemFromInput,
@@ -66,10 +68,10 @@ import type { Judgment } from "../jev/types.ts";
 import { renderResultReport } from "../render.ts";
 import { isRecord } from "../result.ts";
 import type { ToolDependencies } from "../runtime.ts";
-import { COMMAND_LIMIT_NOTICE } from "../texts/ask.ts";
 import { NOT_CONFIGURED } from "../texts/configuration.ts";
 import { ASK_GUIDELINE } from "../texts/instructions.ts";
 import { asksParameter } from "./ask-schema.ts";
+import { createJudgeOptions, finishToolCall } from "./judge-options.ts";
 
 interface AskEvidenceFacts {
   references?: ReferenceResolution;
@@ -115,7 +117,7 @@ export function createAskTool(dependencies: ToolDependencies) {
   return {
     name: "jev_ask",
     label: "Jev ask",
-    description: `${describeAsk(names)}\n\n${COMMAND_LIMIT_NOTICE}`,
+    description: describeAsk(names),
     parameters,
     ...(isOmp
       ? {
@@ -202,18 +204,13 @@ export function createAskTool(dependencies: ToolDependencies) {
         result: Judgment,
         input: Omit<EnvelopeInput, "yield">,
       ) => {
-        const envelope = buildEnvelope({
-          ...input,
-          yield: {
-            calls: result.calls ?? 0,
-            questions: result.questions ?? 0,
-            costUsd: result.usage?.costUsd,
-            cacheHits: result.cacheHits ?? 0,
-            cacheRequests: result.cacheRequests ?? 0,
-            elapsedMs: performance.now() - started,
-          },
+        const { content, envelope } = finishToolCall(runtime, ctx, started, input, {
+          calls: result.calls ?? 0,
+          questions: result.questions ?? 0,
+          costUsd: result.usage?.costUsd,
+          cacheHits: result.cacheHits ?? 0,
+          cacheRequests: result.cacheRequests ?? 0,
         });
-        runtime.session.record(envelope);
         const diagnostics: Diagnostic[] = [];
         const actions: Action[] = [];
         const globalMissing = new Map<
@@ -1056,9 +1053,16 @@ export function createAskTool(dependencies: ToolDependencies) {
             ...(secret ? { cause: "secret_pattern" as const } : {}),
           };
         });
+      // Same-subject controls are judged in a second round only; sending
+      // them here would judge every claim instead of contradicted ones.
+      const secondRound = new Set(
+        asks.readings.flatMap((reading) =>
+          reading.sameSubject ? [reading.sameSubject] : [],
+        ),
+      );
       const questions = Object.fromEntries(
         Object.entries(asks.questions).filter(
-          ([id]) => !blockedMembers.has(id),
+          ([id]) => !blockedMembers.has(id) && !secondRound.has(id),
         ),
       );
       const integrity = checkIntegrity(
@@ -1066,52 +1070,28 @@ export function createAskTool(dependencies: ToolDependencies) {
         asks.asks,
         identities.filter((identity) => identity.content.trim().length > 0),
       );
-      let sent = 0;
-      let refusal: BudgetRefusal | undefined;
-      const options = {
+      const { options: judgeOptions, budget: callBudget } = createJudgeOptions({
         signal,
-        cache: !args.command,
-        ...runtime.session.requestGate(),
-        admissionCause: () =>
-          refusal?.kind === "session"
-            ? ("session_budget" as const)
-            : ("call_budget" as const),
-        beforeRequest: (questionCount: number) => {
-          if (args.max_calls !== undefined && sent >= args.max_calls) {
-            refusal = {
-              kind: "max_calls",
-              message: `max_calls=${args.max_calls} reached`,
-            };
-            return { ok: false, error: refusal.message };
-          }
-          const admitted = runtime.session.admit(questionCount);
-          if (!admitted.ok) {
-            refusal = { kind: "session", message: admitted.error };
-            return admitted;
-          }
-          sent++;
-          return admitted;
-        },
-        onUsage: (usage: { inputTokens: number; costUsd: number }) =>
-          runtime.session.recordUsage(usage),
-      };
+        maxCalls: args.max_calls,
+        session: runtime.session,
+      });
+      const options = { ...judgeOptions, cache: !args.command };
       if (command?.ok) {
         const output = command.output;
         const text = output.stdout + output.stderr;
-        const size = JSON.stringify({ ...state.state, output }).length;
-        if (size > STATE_MAX_CHARS) {
-          const stdoutChunks = outputChunks(output.stdout);
-          const stderrChunks = outputChunks(output.stderr);
-          const chunks = [...stdoutChunks, ...stderrChunks];
-          if (
-            command.compressedChars >
-              OUTPUT_CHUNK_CHARS * OUTPUT_FIND_MAX_CALLS ||
-            chunks.length > OUTPUT_FIND_MAX_CALLS
-          )
-            return textResult(
-              `output requires more than ${OUTPUT_FIND_MAX_CALLS} find calls: ${command.originalBytes} bytes before, ${command.compressedChars} chars after compression; narrow command (remove verbosity or filter)`,
-              "evidence_too_large",
-            );
+        if (needsPassageFinding(state.state, output)) {
+          const planned = planPassageFinding({
+            stdout: output.stdout,
+            stderr: output.stderr,
+            compressedChars: command.compressedChars,
+            originalBytes: command.originalBytes,
+          });
+          if (!planned.ok)
+            return textResult(planned.error, "evidence_too_large");
+          const chunks = [
+            ...planned.plan.stdoutChunks,
+            ...planned.plan.stderrChunks,
+          ];
           const chunkStates = chunks.map((chunk) =>
             withEvidenceContext({ output: chunk.text }, evidenceContext),
           );
@@ -1154,59 +1134,23 @@ export function createAskTool(dependencies: ToolDependencies) {
               fact: "output find incomplete: some chunks were not judged",
               next: "narrow command or raise max_calls",
             });
-          const emptySize = JSON.stringify({
-            ...state.state,
-            output: { ...output, stdout: "", stderr: "", truncated: true },
-          }).length;
-          const budget = STATE_MAX_CHARS - emptySize - 16;
-          if (budget < 100)
-            return textResult(
-              "No space for command output; reduce paths or state.",
-              "evidence_too_large",
-            );
-          const stderrSize = JSON.stringify(output.stderr).length;
-          const stdoutSize = JSON.stringify(output.stdout).length;
-          const stdoutBudget = !output.stderr
-            ? budget
-            : stderrSize < budget / 2
-              ? budget - stderrSize
-              : stdoutSize < budget / 2
-                ? stdoutSize
-                : Math.floor(
-                    (budget * output.stdout.length) / Math.max(1, text.length),
-                  );
-          output.stdout = output.stdout
-            ? selectOutput(
-                output.stdout,
-                stdoutChunks,
-                found.slice(0, stdoutChunks.length),
-                stdoutBudget,
-              )
-            : "";
-          output.stderr = output.stderr
-            ? selectOutput(
-                output.stderr,
-                stderrChunks,
-                found.slice(stdoutChunks.length),
-                budget - stdoutBudget,
-              )
-            : "";
-          if (
-            chunks.some(
-              (chunk, index) =>
-                (found[index] ?? 0) >= 0.5 &&
-                !(
-                  index < stdoutChunks.length ? output.stdout : output.stderr
-                ).includes(chunk.text),
-            )
-          )
+          const fitted = fitOutputToBudget(
+            state.state,
+            output,
+            planned.plan,
+            found,
+          );
+          if (!fitted.ok)
+            return textResult(fitted.error, "evidence_too_large");
+          output.stdout = fitted.fitted.stdout;
+          output.stderr = fitted.fitted.stderr;
+          if (fitted.fitted.omittedFailing)
             integrity.controls.push({
               fact: "failing output passages omitted: insufficient state budget",
               next: "narrow command or reduce paths",
             });
           output.truncated = true;
-          command.selectedPassages =
-            output.stdout.length + output.stderr.length < text.length;
+          command.selectedPassages = fitted.fitted.selectedPassages;
         }
         state.state.output = { ...output };
         const checked = checkIntegrity(state.state, asks.asks, [], {
@@ -1306,6 +1250,43 @@ export function createAskTool(dependencies: ToolDependencies) {
                 }
               : undefined,
         };
+      // Same-subject controls: one extra judge call for every contradicted
+      // first-round verdict, on the same state. The call counts against
+      // max_calls through options; a refused or failed round leaves each
+      // control unjudged so readAsks demotes the contradiction.
+      if (result.ok) {
+        const controls = sameSubjectQuestions(
+          asks,
+          result.answers,
+          reversed?.ok ? reversed.answers : undefined,
+        );
+        if (Object.keys(controls).length) {
+          const second = await client.judge(state.state, controls, options);
+          if (second.ok) Object.assign(result.answers, second.answers);
+          else
+            for (const id of Object.keys(controls))
+              result.answers[id] = {
+                type: "unjudged",
+                reason: second.error,
+              };
+          const first = result;
+          result = {
+            ...first,
+            calls: (first.calls ?? 0) + (second.calls ?? 0),
+            questions: (first.questions ?? 0) + (second.questions ?? 0),
+            cacheHits: (first.cacheHits ?? 0) + (second.cacheHits ?? 0),
+            cacheRequests:
+              (first.cacheRequests ?? 0) + (second.cacheRequests ?? 0),
+            usage: {
+              inputTokens:
+                (first.usage?.inputTokens ?? 0) +
+                (second.usage?.inputTokens ?? 0),
+              costUsd:
+                (first.usage?.costUsd ?? 0) + (second.usage?.costUsd ?? 0),
+            },
+          };
+        }
+      }
       const attribution: Array<
         NonNullable<EnvelopeInput["limitations"]>[number]
       > = [];
@@ -1451,6 +1432,7 @@ export function createAskTool(dependencies: ToolDependencies) {
           };
         }
       }
+      const refusal = callBudget();
       const unchecked = asks.readings
         .filter(
           (reading) =>

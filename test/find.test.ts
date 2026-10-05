@@ -178,6 +178,7 @@ for (const scenario of [
           calls++;
           if (state.candidates) {
             const candidates = state.candidates as {
+              id: string;
               path: string;
               excerpt: string;
             }[];
@@ -185,10 +186,31 @@ for (const scenario of [
               candidates.every((item) => item.excerpt.includes("invoice")),
               true,
             );
+            const paths = candidates.map((item) => item.path);
             assert.deepEqual(
-              candidates.map((item) => item.path),
+              paths,
               calls === 3 ? ["a.ts", "b.ts"] : ["b.ts", "a.ts"],
             );
+            // Options are joined to state.candidates by id alone, so each one
+            // must name its own path or the judge sees two anonymous options.
+            // The reverse order reorders options but keeps each id on its path.
+            const entry = questions.entry as {
+              type: string;
+              criteria: Record<string, string>;
+            };
+            assert.equal(entry.type, "choice");
+            const pathById = new Map(
+              candidates.map((item) => [item.id, item.path]),
+            );
+            const named = Object.entries(entry.criteria).filter(
+              ([id]) => id !== "none",
+            );
+            assert.equal(named.length, paths.length);
+            for (const [id, label] of named)
+              assert.ok(
+                label.endsWith(String(pathById.get(id))),
+                `option ${id} does not name ${pathById.get(id)}`,
+              );
             const probabilities =
               calls === 3 ? scenario.first : scenario.second;
             assert.ok(probabilities);

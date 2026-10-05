@@ -16,6 +16,30 @@ const units: EvidenceUnit[] = [
     afterRange: { start: 1, end: 1 },
   },
 ];
+test("drift pointer is omitted past the option cap while requirements stay", () => {
+  const text = "### REQ-001 Value\nReturn one.";
+  const changed: EvidenceUnit[] = Array.from({ length: 255 }, (_, i) => ({
+    id: `u${i}`,
+    kind: "function",
+    file: "a.ts",
+    name: `fn${i}`,
+    exported: true,
+    before: null,
+    after: `export function fn${i}() { return ${i} }`,
+    beforeRange: null,
+    afterRange: { start: 1, end: 1 },
+  }));
+  const fitting = prepareSpecCheck(text, changed.slice(0, 254));
+  const drift = fitting.questions.drift;
+  assert.equal(drift?.type, "choice");
+  if (drift?.type !== "choice") return;
+  assert.equal(Object.keys(drift.criteria).length, 255);
+  const over = prepareSpecCheck(text, changed);
+  assert.equal(Object.hasOwn(over.questions, "drift"), false);
+  assert.ok(Object.hasOwn(over.questions, "req1"));
+  // A missing drift answer yields no drift finding, never a verdict.
+  assert.deepEqual(readSpecJudgment(over, {}), []);
+});
 test("spec preserves requirement text, ignores fenced fake requirements and reports the drift pointer", () => {
   const text =
     "# Specification\n### REQ-001 Expiration\nReject expired tokens.\n```md\n### REQ-FAKE\n```\n### REQ-002 Flags\nName unknown flags in errors.";

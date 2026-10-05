@@ -170,6 +170,81 @@ test("matrix can report both units in one dimension and grades each finding", as
     );
     assert.deepEqual(requests, ["bool", "score", "score"]);
   }));
+test("severity of several flagged dimensions of one unit rides a single request", async () =>
+  repository(async (cwd) => {
+    const requests: { scoreQuestions: number }[] = [];
+    const client: JevClient = {
+      clearCache() {},
+      async judge(_state, questions, options) {
+        const admitted = options?.beforeRequest?.(
+          Object.keys(questions).length,
+        );
+        if (admitted && !admitted.ok)
+          return {
+            ok: false,
+            error: admitted.error,
+            kind: "budget" as const,
+          };
+        const scoreIds = Object.entries(questions)
+          .filter(([, question]) => question.type === "score")
+          .map(([id]) => id);
+        if (scoreIds.length) {
+          requests.push({ scoreQuestions: scoreIds.length });
+          return {
+            ok: true,
+            calls: 1,
+            answers: Object.fromEntries(
+              scoreIds.map((id, index) => [
+                id,
+                {
+                  type: "score" as const,
+                  source: "fresh" as const,
+                  score: index + 1,
+                  confidence: 0.9,
+                  legend: [],
+                  probabilities: { "1": 1 },
+                },
+              ]),
+            ),
+          };
+        }
+        return {
+          ok: true,
+          calls: 1,
+          answers: Object.fromEntries(
+            Object.keys(questions).map((id) => [
+              id,
+              { type: "bool" as const, source: "fresh" as const, p: 0.95 },
+            ]),
+          ),
+        };
+      },
+    };
+    const result = await createCheckDiffTool(dependencies(client)).execute(
+      "1",
+      { check: "risk", witnesses: "off" },
+      undefined,
+      undefined,
+      { cwd },
+    );
+    // Two units x four dimensions collapse to one severity request per unit.
+    assert.deepEqual(requests, [{ scoreQuestions: 4 }, { scoreQuestions: 4 }]);
+    const scored = result.details.envelope.lines.filter(
+      (line) => line.type === "answer" && /severity \d\.\d\/3/.test(line.label),
+    );
+    assert.equal(scored.length, 8);
+    // Each finding keeps its own grade: the four dimensions of a unit are
+    // scored independently, not collapsed onto one shared severity.
+    assert.equal(
+      new Set(
+        scored.map(
+          (line) =>
+            (line as { label: string }).label.match(/severity \d\.\d\/3/)?.[0],
+        ),
+      ).size,
+      4,
+    );
+  }));
 test("max_calls reserves the matrix and exposes unchecked severity instead of no findings", async () =>
   repository(async (cwd) => {
     const requests: string[] = [];
@@ -394,21 +469,27 @@ test("local caller choice has independent bands and retains its proof for severi
                 },
               },
             };
-          if (questions.severity) {
+          const severityIds = Object.entries(questions)
+            .filter(([, question]) => question.type === "score")
+            .map(([id]) => id);
+          if (severityIds.length) {
             severityHasCaller = state.callerEvidence !== undefined;
             return {
               ok: true,
               calls: 1,
-              answers: {
-                severity: {
-                  type: "score",
-                  source: "fresh" as const,
-                  score: 2,
-                  confidence: 0.9,
-                  legend: [],
-                  probabilities: { "2": 1 },
-                },
-              },
+              answers: Object.fromEntries(
+                severityIds.map((id) => [
+                  id,
+                  {
+                    type: "score",
+                    source: "fresh" as const,
+                    score: 2,
+                    confidence: 0.9,
+                    legend: [],
+                    probabilities: { "2": 1 },
+                  },
+                ]),
+              ),
             };
           }
           matrixHasCaller = state.callerEvidence !== undefined;

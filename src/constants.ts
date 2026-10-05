@@ -26,6 +26,10 @@ export const OUTPUT_FILE_MAX_BYTES = 64 * 1024 * 1024;
 export const OUTPUT_LINE_MAX_CHARS = 8_192;
 export const OUTPUT_SHAPE_MAX_COUNT = 2_048;
 export const OUTPUT_FAILURE_WINDOW_LINES = 20;
+// Slack for JSON punctuation growth when fitting selected passages into the state budget.
+export const OUTPUT_BUDGET_SLACK_CHARS = 16;
+// Refuse passage selection below this; narrower than a useful output excerpt.
+export const OUTPUT_MIN_BUDGET_CHARS = 100;
 export const CHOICE_MAX_OPTIONS = 255;
 export const MAX_FILES = 255;
 export const FILE_MAX_KB = STATE_MAX_CHARS / 1_000;
@@ -41,9 +45,11 @@ export const ORDER_REVERSE_BELOW = 0.85;
 export const ORDER_DISAGREE_MIN = 0.1;
 export const BAND_CHOICE_VERDICT_MIN = ORDER_REVERSE_BELOW;
 export const CANNOT_TELL_MIN = 0.3;
+export const SAME_SUBJECT_MIN = 0.5;
 export const REQUEST_MAX_TOKENS = 60_000;
-export const RATE_PER_SECOND = 8;
-export const CONCURRENCY = 8;
+// Engineering bound below the provider's announced 80 req/s; 429 retry-after still applies.
+export const RATE_PER_SECOND = 32;
+export const CONCURRENCY = 16;
 export const REQUEST_ATTEMPTS = 3;
 export const RETRY_BASE_MS = 500;
 export const RETRY_MAX_MS = 5_000;
@@ -51,10 +57,15 @@ export const HTTP_ERROR_MAX_CHARS = 300;
 export const QUESTION_TOKENS = 1 / 3.3;
 export const STATE_TOKENS = 0.283;
 export const REQUEST_BASE_TOKENS = 456;
+// Engineering bound below the provider's 32k per-evaluation limit
+// (state + the longest question in one evaluation).
+export const EVALUATION_MAX_TOKENS = 30_000;
 export const FLAG_MIN = 0.7;
 export const DOCS_CHECK_MIN = 0.2;
 export const DOCS_MAX_SECTIONS = 40;
 export const HOOK_BUDGET_MS = 15_000;
+// Policy, not measurement: bounds the automatic run-end docs check only.
+export const RUN_END_DOCS_MAX_CALLS = 8;
 /** Progressive collection time bound, not a coverage or wall-time guarantee. */
 export const DOCS_COLLECT_BUDGET_MS = 750;
 export const DOCS_NAME_MAX_FILES = 32;
@@ -93,8 +104,6 @@ export const FIND_GREP_PAGE_SIZE = 1024;
 export const FIND_READ_CHUNK_BYTES = 16_384;
 export const LOCATE_MIN_KB = 19;
 export const LOCATE_VERDICT_MIN = 0.7;
-export const LOCATE_GRAY_MIN = 0.4;
-export const LOCATE_SHRINK_TOP = 3;
 export const LOCATE_SECTION_MAX_LINES = 150;
 export const LOCATE_SECTION_MIN_LINES = 8;
 export const LOCATE_WINDOW_LINES = 80;
@@ -107,6 +116,8 @@ export const LOCATE_WINDOW_MAX_SERIALIZED_CHARS = STATE_MAX_CHARS / 4;
 // Keep SHA-256 IDs plus options below Windows' command-line limit.
 export const GIT_BLOB_BATCH_SIZE = 400;
 export const RUNNER_PACKAGE_MAX_BYTES = 64 * 1024;
+// Bound the token scan for a static `from` clause; longer statements fall back to dynamic.
+export const IMPORT_FROM_LOOKAHEAD_TOKENS = 100;
 
 // ADR 0001: allowed local dependencies, including erased type imports.
 export const IMPORT_LAYERS = {

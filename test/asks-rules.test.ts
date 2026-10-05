@@ -38,6 +38,11 @@ for (const [head, p, exact, band] of [
       q1: c(probabilities),
       q2: c(probabilities),
       q3: { type: "bool", p: exact },
+      // Contradicted rows carry a passing same-subject control so the table
+      // keeps testing the exact-statement boundary, not the control.
+      ...(head === "contradicted"
+        ? { q4: { type: "bool", p: 0.9 } as Answer }
+        : {}),
     });
     assert.equal(line?.band, band);
   });

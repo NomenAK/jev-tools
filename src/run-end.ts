@@ -1,5 +1,9 @@
 import type { SessionBoundaryDraft } from "@earendil-works/pi-coding-agent";
-import { FLAG_MIN, HOOK_BUDGET_MS } from "./constants.ts";
+import {
+  FLAG_MIN,
+  HOOK_BUDGET_MS,
+  RUN_END_DOCS_MAX_CALLS,
+} from "./constants.ts";
 import type { ToolDependencies } from "./runtime.ts";
 import { runEndMessage } from "./texts/run-end.ts";
 import { runDocsCheck } from "./tools/docs-check.ts";
@@ -122,6 +126,7 @@ export class RunEnd {
         cwd: ctx.cwd,
         signal: controller.signal,
         budgetMs: remaining,
+        maxCalls: RUN_END_DOCS_MAX_CALLS,
       });
       if (
         !result.ok ||

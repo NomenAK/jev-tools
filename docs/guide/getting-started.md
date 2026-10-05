@@ -179,4 +179,4 @@ Work stopped by a cap is preserved, not dropped: unjudged tests stay selected in
 
 ### Data boundaries
 
-Repository evidence, notes and optional command output go to your configured endpoint; automatic secret redaction is not promised. Review the endpoint's data-handling policy before using a confidential repository, and read [SECURITY.md](../../SECURITY.md) for the trust boundaries and private reporting route.
+Repository evidence, notes and optional command output go to your configured endpoint. The configured API key value is redacted from every payload string before sending, but automatic secret redaction beyond the key value is not promised. Commands run by [jev_ask](../tools/jev_ask.md) inherit the host environment, including `JEV_TOOLS_API_KEY`, and the host exec API offers no environment override, so a command can still read the key itself; `JEV_TOOLS_ALLOW_COMMAND=0` disables this command path. Review the endpoint's data-handling policy before using a confidential repository, and read [SECURITY.md](../../SECURITY.md) for the trust boundaries and private reporting route.

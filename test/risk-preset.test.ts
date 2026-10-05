@@ -6,7 +6,7 @@ import {
   evaluateWitnessHealth,
   normalizeProjectDimensions,
   prepareRiskMatrix,
-  prepareRiskSeverity,
+  prepareSeverityBatch,
 } from "../src/presets/risk.ts";
 
 const unit = (id: string): EvidenceUnit => ({
@@ -130,8 +130,20 @@ test("severity preserves local proof and missing witnesses visibly fail the affe
     source: "static code only; not executed",
     provider: { before: "old", after: "new" },
   };
-  const severity = prepareRiskSeverity(unit("u001"), "reliability", proof);
+  const severity = prepareSeverityBatch([
+    { unit: unit("u001"), dimension: "reliability", callerEvidence: proof },
+  ]);
   assert.deepEqual(severity.state.callerEvidence, proof);
+  assert.deepEqual(severity.ids, ["u001_reliability"]);
+  // The dimension reaches the model through the question, never through a
+  // state field: a single field cannot name several dimensions at once, and
+  // Jev does not see question ids.
+  assert.equal(severity.state.dimension, undefined);
+  assert.equal(severity.state.dimensions, undefined);
+  assert.match(
+    severity.questions.u001_reliability?.instructions ?? "",
+    /"reliability" dimension/,
+  );
   const matrix = prepareRiskMatrix([unit("u001")], {
     witnesses: "on",
     only: ["reliability"],
@@ -150,6 +162,34 @@ test("severity preserves local proof and missing witnesses visibly fail the affe
   const reason = health.unhealthyQuestionIds.get("u001:reliability");
   assert.ok(reason);
   assert.match(reason, /unjudged/);
+});
+
+test("severity state is identical whether one or many dimensions ride the request", () => {
+  const single = prepareSeverityBatch([
+    { unit: unit("u001"), dimension: "security" },
+  ]);
+  const many = prepareSeverityBatch([
+    { unit: unit("u001"), dimension: "security" },
+    { unit: unit("u001"), dimension: "reliability" },
+  ]);
+  // Batching changes only how many questions ride the request, never the
+  // evidence the model is shown.
+  assert.deepEqual(many.state, single.state);
+  assert.deepEqual(many.ids, ["u001_security", "u001_reliability"]);
+  for (const id of many.ids) {
+    const question = many.questions[id];
+    assert.equal(question?.type, "score");
+    assert.match(question?.instructions ?? "", /changed unit u001/);
+  }
+  assert.match(
+    many.questions.u001_security?.instructions ?? "",
+    /"security" dimension/,
+  );
+  assert.match(
+    many.questions.u001_reliability?.instructions ?? "",
+    /"reliability" dimension/,
+  );
+  assert.equal(prepareSeverityBatch([]).ids.length, 0);
 });
 
 test("a failed reference lowers project findings in that batch without project witness questions", () => {

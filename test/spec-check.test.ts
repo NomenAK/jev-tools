@@ -261,3 +261,83 @@ test("spec without requirements keeps its refusal on an empty diff", async () =>
     await rm(cwd, { recursive: true, force: true });
   }
 });
+test("over-cap drift stays unjudged while requirements are still judged", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "spec-drift-"));
+  const asked: string[] = [];
+  const client: JevClient = {
+    clearCache() {},
+    async judge(_state, questions, options) {
+      options?.beforeRequest?.(Object.keys(questions).length);
+      asked.push(...Object.keys(questions));
+      return {
+        ok: true,
+        calls: 1,
+        questions: Object.keys(questions).length,
+        answers: Object.fromEntries(
+          Object.keys(questions).map((id) => [
+            id,
+            {
+              type: "choice",
+              choice: "violates",
+              confidence: 0.9,
+              probabilities: {
+                not_touched: 0.05,
+                conforms: 0.05,
+                violates: 0.9,
+              },
+            },
+          ]),
+        ),
+      };
+    },
+  };
+  try {
+    await exec("git", ["init", "-q"], { cwd, timeout: 10000 });
+    const lines = Array.from(
+      { length: 255 },
+      (_, i) => `export function fn${i}() { return ${i}; }`,
+    );
+    await writeFile(join(cwd, "a.ts"), `${lines.join("\n")}\n`);
+    await writeFile(join(cwd, "SPEC.md"), "### REQ-001 Value\nReturn one.");
+    await exec("git", ["add", "."], { cwd, timeout: 10000 });
+    await exec(
+      "git",
+      [
+        "-c",
+        "user.name=Proof",
+        "-c",
+        "user.email=proof@example.invalid",
+        "commit",
+        "-qm",
+        "base",
+      ],
+      { cwd, timeout: 10000 },
+    );
+    await writeFile(
+      join(cwd, "a.ts"),
+      `${lines.map((line) => `${line} // changed`).join("\n")}\n`,
+    );
+    const host = detectHost({});
+    const result = await runSpecCheck(
+      {
+        client,
+        exec,
+        host,
+        runtime: { session: new Session({}), guide: new Guide(host) },
+      },
+      { cwd, specPath: "SPEC.md" },
+    );
+    assert.equal(result.ok, true);
+    assert.ok(!asked.includes("drift"), "drift never sent past the cap");
+    assert.ok(asked.includes("req1"), "requirements still judged");
+    assert.ok(
+      result.findings.some((finding) => finding.kind === "requirement"),
+    );
+    const unchecked = result.envelope.lines.flatMap((line) =>
+      line.type === "unchecked" ? line.items : [],
+    );
+    assert.ok(unchecked.some((item) => item.startsWith("drift")));
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});

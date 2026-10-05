@@ -11,7 +11,7 @@ Choose the line range in one large file that serves a behavioral goal. For param
 
 ## Decision logic
 
-- Above `LOCATE_VERDICT_MIN` (0.7) an unmarked range is a verdict: read it. From `LOCATE_GRAY_MIN` (0.4) through 0.7, `unsure` lists the two best ranges — read both, not an arbitrary next section. Below 0.4 the tool retries within a narrowed shortlist (top `LOCATE_SHRINK_TOP` plus `none`) and judges again, retaining the original `unsure` band. Option-order sensitivity can also leave the result `unsure`. `none` means no supplied section fits. Values: [design policy](../design.md#judgment-policy).
+- At or above `LOCATE_VERDICT_MIN` (0.7) an unmarked range is a verdict: read it. Below that, `unsure` lists the two best ranges — read both, not an arbitrary next section. Option-order sensitivity can also leave the result `unsure`. `none` means no supplied section fits. Values: [design policy](../design.md#judgment-policy).
 
 ## Controls and failure modes
 

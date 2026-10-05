@@ -77,6 +77,9 @@ export async function checkFileAdmission(
   return { ok: true };
 }
 
+// Accepted TOCTOU limit: these checks and the later open are not atomic, so a
+// concurrent writer to the repository could swap a path component in between;
+// O_NOFOLLOW bounds the final component only.
 export async function resolveInsideRepo(
   root: string,
   path: string,
@@ -151,7 +154,11 @@ export async function admitRepoMetadata(
   return admission.ok ? location : admission;
 }
 
-/** History is admitted by its tracked base tree, independent of worktree ignores or links. */
+/**
+ * History is admitted by its tracked base tree, independent of worktree ignores or links.
+ * Invariant: an admitted path only ever feeds git object reads (ls-tree/show), never a
+ * worktree open, so a worktree symlink cannot redirect the read; links are not resolved here.
+ */
 export async function admitGitPath(
   cwd: string,
   path: string,
@@ -195,7 +202,11 @@ export async function admitGitPath(
   return { ok: true };
 }
 
-/** The only content opener for repository files. Callers own and close the handle. */
+/**
+ * The only content opener for repository files. Callers own and close the handle.
+ * TOCTOU: resolveInsideRepo and this open are separate steps, so a concurrent writer
+ * could swap a parent component; O_NOFOLLOW rejects a swapped leaf symlink.
+ */
 export async function openRepoFile(
   cwd: string,
   path: string,

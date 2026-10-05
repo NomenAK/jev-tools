@@ -146,7 +146,7 @@ followed by the next action:
 
 The tool's own description adds the standing notice:
 
-> Command output is captured privately and refused after execution above 64 MiB per stream; this does not cap disk usage or interrupt the command. Lines are capped at 8192 chars with explicit truncation markers; rarity grouping stops at 2048 distinct shapes with an explicit notice. timeout_s defaults to 60 seconds, maximum 300. JEV_TOOLS_ALLOW_COMMAND=0 disables command.
+> Refused above 64 MiB per stream (nothing on disk is capped). timeout_s defaults to 60, max 300; JEV_TOOLS_ALLOW_COMMAND=0 removes command and timeout_s.
 
 — `src/texts/ask.ts`
 
@@ -190,7 +190,7 @@ A needed piece is missing, and the line names it:
 
 — `src/tools/ask.ts`
 
-> cannot_tell >= 0.3 is abstain and names the missing provider/binding
+> unknown bindings come back abstain naming the missing provider or binding
 
 — the same condition described in `src/texts/check-diff.ts`
 
@@ -198,7 +198,7 @@ A needed piece is missing, and the line names it:
 
 ### A line says `not addressed` or `no (not shown)`
 
-The evidence you supplied does not show the statement. That is not the same as false. The `verify` intent separates `holds`, `contradicted`, `not addressed by the state` and `cannot tell`; an exact-statement cross-check cannot by itself prove contradiction.
+The evidence you supplied does not show the statement. That is not the same as false. The `verify` intent separates `holds`, `contradicted`, `not addressed by the state` and `cannot tell`; an exact-statement cross-check cannot by itself prove contradiction. A `contradicted` verdict is demoted to unsure when the refuting evidence may concern another subject — the reason starts `evidence may concern a different subject`.
 
 **Fix.** Supply the file or output that would show it.
 
@@ -454,9 +454,9 @@ Partial collection is bounded and visible:
 
 — `src/tools/docs-check.ts` (a section title, rendered by `src/render.ts` from a `collection` line)
 
-And the preset states its own measured reach:
+And the preset states its own reach:
 
-> Measured D22 limit: 2/45 documentation obligations found across 180 partial got/zod commits.
+> Docs check flags existing sentences the change may have made false; it does not detect missing documentation.
 
 > Also review missing documentation: this check evaluates existing sentences, not documentation completeness.
 
@@ -491,6 +491,18 @@ The API key is redacted from diagnostics, and credentials supplied by the enviro
 **Fix.** Correct `JEV_TOOLS_API_KEY` or the stored key, then restart or re-run `/jev-setup`.
 
 ### `Jev max_tokens_exceeded`
+
+> question exceeds the per-evaluation budget (~N tokens > EVALUATION_MAX_TOKENS=30000); not judged
+
+— `src/core/batches.ts`
+
+This one is decided locally, before any request. The state and that question are
+estimated with the same planning coefficients used for request packing; the
+estimate is a heuristic, so a question under the bound is still not guaranteed to
+be accepted by the endpoint, and a question over it is withheld rather than sent
+and rejected. No round trip is spent.
+
+If the endpoint rejects a request anyway:
 
 > Jev max_tokens_exceeded: state too large for a single question; question not judged.
 

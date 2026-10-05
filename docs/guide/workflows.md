@@ -52,7 +52,7 @@ Once you know the file and it is at least 19,000 bytes:
 
 This tool has no `max_calls`; session budgets still apply.
 
-**How to read it.** The result names a `path:start-end` with a label, a probability and the read to make next. Above 0.7 an unmarked range is a verdict. From 0.4 through 0.7 the line is `unsure` and lists the two best ranges — often adjacent code that shares the answer, such as a getter and its setter. `none` means no supplied section fits the goal.
+**How to read it.** The result names a `path:start-end` with a label, a probability and the read to make next. A leading probability at or above 0.7 is a verdict. Otherwise the line is `unsure` and lists the two best ranges — often adjacent code that shares the answer, such as a getter and its setter. `none` means no supplied section fits the goal.
 
 **Next action.** Read the cited range with `read`. On unsure, read both ranges, not the next chunk of the file.
 
@@ -306,7 +306,7 @@ spec: no violations or drift reported
 
 Directories are walked recursively. `rate` needs 2 to 10 concrete ordered levels on one dimension. `decide` is available for mutually exclusive rivals, and `free` for a custom uncalibrated `bool`, `choice` or `score` question.
 
-**How to read it.** Boolean answers give `yes` or `no (not shown)` with the probability of yes; between 0.20 and 0.80 the line is `unsure`. Every file is judged alone, so a confident answer can still be wrong when the behavior depends on a file you did not pass, and independent answers establish no cross-file relationship. Build output, binaries, lockfiles, gitignored untracked files, empty files and oversized files are excluded or reported; at 255 admitted files the call is refused with a narrowing suggestion.
+**How to read it.** Verify answers distinguish `holds`, `contradicted`, `not addressed` and `cannot tell` per file; other boolean answers give `yes` or `no (not shown)` with the probability of yes, and between 0.20 and 0.80 the line is `unsure`. Every file is judged alone, so a confident answer can still be wrong when the behavior depends on a file you did not pass, and independent answers establish no cross-file relationship. Build output, binaries, lockfiles, gitignored untracked files, empty files and oversized files are excluded or reported; at 255 admitted files the call is refused with a narrowing suggestion.
 
 **Next action.** Read the files whose answers matter, then act. Use exact search or code for strings, counts, dates and comparisons between files — Jev does not count or compute.
 
