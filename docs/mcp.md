@@ -18,8 +18,8 @@ The server reads, per field, the environment first and then the configuration sa
 
 | Variable | Required | Meaning |
 |---|---|---|
-| `JEV_TOOLS_URL` | yes | Complete endpoint URL compatible with the Jev API format. |
-| `JEV_TOOLS_API_KEY` | yes | Bearer credential. Never printed in tool output. |
+| `JEV_TOOLS_URL` | yes | Complete endpoint URL compatible with the Jev API format. Must be `https:`; plain `http:` is accepted only for `127.0.0.1`, `::1` or `localhost`. |
+| `JEV_TOOLS_API_KEY` | yes | Bearer credential. Never printed in tool output, never passed to `jev_ask` commands, and replaced with `[redacted]` in their output. |
 | `JEV_TOOLS_MODEL` | no | Requested model, default `openjev`. |
 | `JEV_TOOLS_ROOT` | no | Repository directory when `--root` is not given. |
 | `JEV_TOOLS_MAX_CALLS`, `JEV_TOOLS_MAX_USD` | no | Session call and cost limits for this server process. |
@@ -194,7 +194,7 @@ npx -y -p jev-agent-tools jev-agent-tools-mcp --root . < /dev/null
 
 In PowerShell, run the second as `$null | npx -y -p jev-agent-tools jev-agent-tools-mcp --root .`.
 
-The second command prints `jev-agent-tools MCP server ready (root ...; endpoint configured)` on stderr and exits when stdin closes. In the client, the six tools should be listed: `jev_ask`, `jev_ask_files`, `jev_find_files`, `jev_locate_in_file`, `jev_check_diff`, `jev_select_tests`. Ask the agent to run `jev_ask` with a one-line note and a yes/no question; the result ends with the calls, cost and time footer.
+The second command prints `jev-agent-tools MCP server ready (root ...; endpoint configured)` on stderr and exits when stdin closes. In the client, the six tools should be listed: `jev_ask`, `jev_ask_files`, `jev_find_files`, `jev_locate_in_file`, `jev_check_diff`, `jev_select_tests`. A smoke call with a one-line note and a yes/no question reports execution, evidence context, fresh/cache/static/unjudged items, diagnostics and separate request/result accounting. This verifies integration, not model accuracy.
 
 ## From a clone
 
@@ -207,12 +207,14 @@ Then use `"command": "node"` with `"args": ["/absolute/path/to/jev-tools/dist/mc
 
 ## Differences from pi and omp
 
-- **No run-end documentation check.** It is a host hook. Before finishing, ask the agent to call `jev_check_diff` with `check: "docs"`; the [instructions](agent-instructions.md) say so.
+- **No run-end documentation check.** pi/OMP retain an automatic opt-out host hook (`JEV_TOOLS_AUTO_DOCS=0`). MCP has no hook and its absence does not require manual replacement calls, including risk followed by docs; choose a review only when it can inform an open decision.
 - **Approval is the client's.** `jev_ask` is annotated as not read-only and potentially destructive while it accepts `command`; the other five are read-only. All six are open-world because evidence goes to your endpoint. `JEV_TOOLS_ALLOW_COMMAND=0` removes `command` from the schema and makes `jev_ask` read-only.
-- **Instructions.** The reading guide and the `jev_ask` policy are sent as the server's `instructions`. Clients may ignore them, so also add the [agent instructions](agent-instructions.md) to the project.
+- **Instructions.** The full reading guide and discretionary policy are sent as the server's `instructions`, using the same canonical fragments as pi/OMP with MCP's explicit hook difference. Clients may ignore them, so also copy the versioned [agent instructions](agent-instructions.md) into the project and update the copy on release upgrades.
 - **Tool names in descriptions** refer to "your text search tool" and "your file-name search tool" instead of pi or omp tool names.
-- **Protocol.** Versions 2024-11-05 through 2025-11-25 via `initialize`, 2026-07-28 via `server/discover` and per-request `_meta`. Modern discovery supplies server identity in `_meta["io.modelcontextprotocol/serverInfo"]`; discovery and tool lists advertise `ttlMs: 0` and `cacheScope: "private"`, so clients must not share them across authorization contexts. Tools only; no resources, prompts or sampling. Cancelling a call aborts its Jev requests and command.
+- **Protocol.** Versions 2024-11-05 through 2025-11-25 use `initialize`; 2026-07-28 uses `server/discover` and per-request `_meta`. Versions 2025-06-18 and later advertise `outputSchema` and return `structuredContent.result`; 2024-11-05 and 2025-03-26 receive self-contained text only. Each request retains its negotiated version even if another request changes the session version. Only 2026-07-28 adds `resultType: "complete"` and `ttlMs: 0` / `cacheScope: "private"`; this transport completion is independent of the report's execution state. Modern discovery supplies identity in `_meta["io.modelcontextprotocol/serverInfo"]`. Expected refusals use typed reports and appropriate `isError`; unexpected server exceptions remain JSON-RPC internal errors without invented report accounting. Tools only; no resources, prompts or sampling. Cancelling a call aborts its Jev requests and command.
+- **Malformed arguments.** Input-schema violations return JSON-RPC `INVALID_PARAMS` without a result report or judgment; well-formed calls rejected by root/evidence admission retain their typed refusal report.
 - **One process, one session.** Limits, cache and counters last as long as the connection; restart the server to reset them.
+- **Per-call evidence root.** All six tools accept `root` for a registered worktree of the same repository, with the [shared admission restrictions](../README.md#evidence-root). The startup directory remains the authority; `root` is not permission to access unrelated repositories.
 - **Command shutdown.** Cancellation, command timeout, stdin closure, SIGTERM and SIGINT wait for bounded command-tree termination. On POSIX the managed group receives SIGTERM, then SIGKILL after two seconds if it remains. On Windows, the server maps ordinary MSYS descendants through the same Bash installation's process table before running the system `taskkill /T /F`; each subprocess is bounded to five seconds. Cancelled calls receive no response. This is not a sandbox: descendants that deliberately detach from the managed group or escape the tracked tree are not contained.
 
 ## Troubleshooting

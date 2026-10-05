@@ -1,14 +1,15 @@
-import { relative, resolve } from "node:path";
+import { isAbsolute, relative, resolve } from "node:path";
 import { STATE_MAX_CHARS, TIMEOUT_MS } from "../constants.ts";
 import type { GitExec } from "../core/git.ts";
 import type { ImportSource } from "../core/imports.ts";
 import type { Result } from "../result.ts";
-import { collectFiles } from "./files.ts";
+import { checkFileAdmission, collectFiles } from "./files.ts";
 import { verifyGitUtf8 } from "./utf8.ts";
 
 export interface AskRepository {
   root: string;
   known: ReadonlySet<string>;
+  beforeKnown: ReadonlySet<string>;
   baseSha?: string;
   read(path: string): Promise<Result<ImportSource>>;
   readBefore(path: string): Promise<Result<{ text: string | null }>>;
@@ -69,18 +70,20 @@ export async function collectAskRepository(
     for (const path of ignored.stdout.split("\0")) known.delete(path);
     const baseSha = revision?.stdout.trim();
     const basePaths = baseSha
-      ? await exec(
-          "git",
-          ["ls-tree", "-r", "--name-only", "-z", baseSha],
-          gitOptions,
-        )
+      ? await exec("git", ["ls-tree", "-r", "-z", baseSha], gitOptions)
       : undefined;
     if (basePaths && (basePaths.code !== 0 || basePaths.killed))
       return {
         ok: false,
         error: basePaths.stderr || "Cannot list base paths.",
       };
-    const beforeKnown = new Set(basePaths?.stdout.split("\0").filter(Boolean));
+    const beforeEntries = new Map(
+      (basePaths?.stdout.split("\0").filter(Boolean) ?? []).map((entry) => [
+        entry.slice(entry.indexOf("\t") + 1),
+        entry,
+      ]),
+    );
+    const beforeKnown = new Set(beforeEntries.keys());
     const reads = new Map<string, Promise<Result<ImportSource>>>();
     const beforeReads = new Map<
       string,
@@ -90,6 +93,7 @@ export async function collectAskRepository(
       ok: true,
       root,
       known,
+      beforeKnown,
       baseSha,
       read(path) {
         let pending = reads.get(path);
@@ -117,9 +121,53 @@ export async function collectAskRepository(
         let pending = beforeReads.get(path);
         if (!pending) {
           pending = (async () => {
-            if (!baseSha || !beforeKnown.has(path))
-              return { ok: true as const, text: null };
             try {
+              if (isAbsolute(path) || path.split(/[\\/]/).includes(".."))
+                return {
+                  ok: false as const,
+                  cause: "forbidden_path" as const,
+                  error: `Path must remain inside the repository: ${path}.`,
+                };
+              const admission = await checkFileAdmission(root, path);
+              if (!admission.ok) return admission;
+              const ignoredPath = await exec(
+                "git",
+                ["check-ignore", "--no-index", "--", path],
+                gitOptions,
+              );
+              if (ignoredPath.killed || ![0, 1].includes(ignoredPath.code))
+                return {
+                  ok: false as const,
+                  cause: "git_failure" as const,
+                  error: `${path}: historical admission unavailable`,
+                };
+              if (ignoredPath.code === 0)
+                return {
+                  ok: false as const,
+                  cause: "ignored_path" as const,
+                  error: `${path}: gitignored: not sent to Jev`,
+                };
+              if (!baseSha)
+                return {
+                  ok: false as const,
+                  error: `${path}: comparison base unavailable`,
+                };
+              if (!beforeKnown.has(path))
+                return known.has(path)
+                  ? { ok: true as const, text: null }
+                  : {
+                      ok: false as const,
+                      error: `${path}: not in current or comparison base inventory`,
+                    };
+              const entry = beforeEntries.get(path) ?? "";
+              if (!/^(?:100644|100755) blob /.test(entry))
+                return {
+                  ok: false as const,
+                  cause: entry.startsWith("120000 ")
+                    ? ("symlink" as const)
+                    : ("file_unavailable" as const),
+                  error: `${path}: not a regular file at comparison base: not sent to Jev`,
+                };
               const object = await exec(
                 "git",
                 [
@@ -172,10 +220,20 @@ export async function collectAskRepository(
                   ok: false as const,
                   error: `before evidence unavailable for ${path}`,
                 };
+              if (loaded.stdout.includes("\0"))
+                return {
+                  ok: false as const,
+                  cause: "binary_or_non_utf8" as const,
+                  error: `${path}: binary content: not sent to Jev`,
+                };
               const decoded = verifyGitUtf8(loaded.stdout, id, size);
               return decoded.ok
                 ? decoded
-                : { ok: false as const, error: `${path}: ${decoded.error}` };
+                : {
+                    ok: false as const,
+                    cause: "binary_or_non_utf8" as const,
+                    error: `${path}: ${decoded.error}`,
+                  };
             } catch (error) {
               return { ok: false as const, error: String(error) };
             }

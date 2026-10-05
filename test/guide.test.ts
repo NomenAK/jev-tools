@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { replaceInstructionBlock } from "../scripts/generate-instructions.ts";
 import { Guide } from "../src/guide.ts";
 import { detectHost } from "../src/host.ts";
 
@@ -66,4 +67,22 @@ test("pi refreshes the guide as active tools change", () => {
   event.systemPromptOptions.selectedTools = ["read"];
   host.emit("before_agent_start", event);
   assert.deepEqual(event.systemPromptOptions.sections, { other: "kept" });
+});
+
+test("generation refuses ambiguous markers and preserves surrounding host documentation", () => {
+  const start = "<!-- BEGIN GENERATED JEV INSTRUCTIONS -->";
+  const end = "<!-- END GENERATED JEV INSTRUCTIONS -->";
+  const document = `before\n${start}\nold\n${end}\nafter`;
+  const generated = replaceInstructionBlock(document, "policy\n");
+  assert.ok(generated.startsWith("before\n"));
+  assert.ok(generated.endsWith(`${end}\nafter`));
+  assert.equal(replaceInstructionBlock(generated, "policy\n"), generated);
+  for (const malformed of [
+    "no markers",
+    `${end}\n${start}`,
+    `${document}\n${start}`,
+    `${document}\n${end}`,
+  ]) {
+    assert.throws(() => replaceInstructionBlock(malformed, "policy\n"));
+  }
 });

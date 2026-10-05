@@ -7,6 +7,9 @@ import { test } from "node:test";
 import { pathToFileURL } from "node:url";
 import { execCommand } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/exec.js";
 import { captureCommand } from "../src/adapters/command.ts";
+import { spawnExec } from "../src/adapters/exec.ts";
+import { powershellEnv } from "../src/adapters/private-storage.ts";
+import { OUTPUT_LINE_MAX_CHARS } from "../src/constants.ts";
 import type { GitExec } from "../src/core/git.ts";
 import { Guide } from "../src/guide.ts";
 import { detectHost } from "../src/host.ts";
@@ -48,7 +51,10 @@ for (const mode of ["failure", "timeout", "missing"] as const)
         return {
           ok: true,
           answers: Object.fromEntries(
-            Object.keys(questions).map((id) => [id, { type: "bool", p: 0.99 }]),
+            Object.keys(questions).map((id) => [
+              id,
+              { type: "bool", source: "fresh", p: 0.99 },
+            ]),
           ),
           calls: 1,
           questions: Object.keys(questions).length,
@@ -77,12 +83,27 @@ for (const mode of ["failure", "timeout", "missing"] as const)
       undefined,
       { cwd: process.cwd() },
     );
-    assert.equal(typeof observed?.output, "object");
-    const output = observed?.output as Record<string, unknown>;
-    assert.equal(output.exit_code, mode === "failure" ? 1 : null);
-    assert.equal(output.timed_out, mode === "timeout");
-    if (mode === "missing") assert.match(String(output.stderr), /ENOENT/);
-    else assert.match(result.content[0]?.text ?? "", /not identifiable/);
+    if (mode === "missing") {
+      assert.equal(observed, undefined);
+      assert.equal(result.details.result.execution, "refused");
+      assert.equal(result.details.result.context.command.execution, "started");
+      assert.equal(
+        result.details.result.context.command.exitCode.status,
+        "unknown",
+      );
+      assert.equal(
+        result.details.result.context.command.timedOut.status,
+        "unknown",
+      );
+      assert.equal(result.details.result.accounting.httpAttempts, 0);
+    } else {
+      assert.equal(typeof observed?.output, "object");
+      const output = observed?.output as Record<string, unknown>;
+      assert.equal(output.exit_code, mode === "failure" ? 1 : null);
+      assert.equal(output.timed_out, mode === "timeout");
+      assert.match(result.content[0]?.text ?? "", /not identifiable/);
+      assert.equal(result.details.result.context.command.execution, "finished");
+    }
     for (const path of paths) await assert.rejects(access(path));
   });
 test("real host bash capture preserves CI cwd stdout stderr and failed exit", async () => {
@@ -105,6 +126,125 @@ test("real host bash capture preserves CI cwd stdout stderr and failed exit", as
     assert.equal(output.output.exit_code, 7);
   } finally {
     await rm(cwd, { recursive: true, force: true });
+  }
+});
+test("command children never inherit JEV_TOOLS_API_KEY", async (t) => {
+  const key = "child-env-secret-key";
+  const previous = process.env.JEV_TOOLS_API_KEY;
+  process.env.JEV_TOOLS_API_KEY = key;
+  t.after(() => {
+    if (previous === undefined) delete process.env.JEV_TOOLS_API_KEY;
+    else process.env.JEV_TOOLS_API_KEY = previous;
+  });
+  const cwd = await mkdtemp(join(tmpdir(), "jev-command-env-"));
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  for (const exec of [
+    spawnExec,
+    ((binary, args, options) =>
+      execCommand(binary, args, cwd, options)) as GitExec,
+  ]) {
+    // No secret passed: only the child environment can reveal the key.
+    const output = await captureCommand(exec, cwd, "env");
+    assert.equal(output.ok, true);
+    if (!output.ok) return;
+    assert.match(output.output.stdout, /^CI=1$/m);
+    assert.doesNotMatch(output.output.stdout, /JEV_TOOLS_API_KEY/);
+    assert.equal(output.output.stdout.includes(key), false);
+    assert.equal(output.redactions, 0);
+  }
+  const ps = powershellEnv(
+    { Path: "C:\\Windows", jev_tools_api_key: key, PSModulePath: "x" },
+    { JEV_PRIVATE_PATH: "C:\\p" },
+  );
+  assert.deepEqual(ps, { Path: "C:\\Windows", JEV_PRIVATE_PATH: "C:\\p" });
+});
+test("configured key echoed by a command is redacted before Jev sees the state", async () => {
+  const key = "saved-config-secret-key";
+  let command = "";
+  const exec: GitExec = async (binary, args) => {
+    if (binary === "git")
+      return { stdout: "", stderr: "not a repo", code: 1, killed: false };
+    command = args.join(" ");
+    await writeFile(args.at(-2) ?? "", `token=${key}\nagain ${key}\n`);
+    await writeFile(args.at(-1) ?? "", `stderr ${key}\n`);
+    return { stdout: "", stderr: "", code: 0, killed: false };
+  };
+  const payloads: string[] = [];
+  const client: JevClient = {
+    clearCache() {},
+    async judge(state, questions) {
+      payloads.push(JSON.stringify(state));
+      return {
+        ok: true,
+        answers: Object.fromEntries(
+          Object.keys(questions).map((id) => [
+            id,
+            { type: "bool", source: "fresh", p: 0.99 },
+          ]),
+        ),
+        calls: 1,
+        questions: Object.keys(questions).length,
+      };
+    },
+  };
+  const host = detectHost({});
+  const result = await createAskTool({
+    client,
+    host,
+    exec,
+    apiKey: key,
+    runtime: { guide: new Guide(host), session: new Session({}) },
+  }).execute(
+    "redaction",
+    {
+      command: `echo ${key}`,
+      asks: {
+        intent: "free",
+        question: { type: "bool", instructions: "Does output print a token?" },
+      },
+    },
+    undefined,
+    undefined,
+    { cwd: process.cwd() },
+  );
+  assert.ok(command.includes(key), "the command itself still runs as given");
+  assert.ok(payloads.length > 0);
+  for (const payload of payloads) {
+    assert.equal(payload.includes(key), false);
+    assert.match(payload, /\[redacted\]/);
+  }
+  assert.ok(
+    result.details.result.diagnostics.some((diagnostic) =>
+      diagnostic.fact.includes(
+        "4 occurrences of the configured Jev API key replaced with [redacted]",
+      ),
+    ),
+  );
+  assert.equal(JSON.stringify(result).includes(key), false);
+});
+test("a key cut by the line limit leaves no readable prefix", async () => {
+  const key = "cut-boundary-secret-key-0123456789";
+  const keep = 10;
+  const line = `${"x".repeat(OUTPUT_LINE_MAX_CHARS - keep)}${key} tail`;
+  const exec: GitExec = async (_binary, args) => {
+    await writeFile(args.at(-2) ?? "", `${line}\n`);
+    await writeFile(args.at(-1) ?? "", "");
+    return { stdout: "", stderr: "", code: 0, killed: false };
+  };
+  const captured = await captureCommand(
+    exec,
+    process.cwd(),
+    "print",
+    undefined,
+    undefined,
+    key,
+  );
+  assert.ok(captured.ok);
+  if (captured.ok) {
+    const stdout = captured.output.stdout;
+    assert.equal(stdout.includes(key.slice(0, keep)), false);
+    assert.match(stdout, /\[redacted\]…\[line truncated at/);
+    assert.equal(captured.redactions, 1);
   }
 });
 test("oversized real command is refused after execution", async () => {
@@ -147,6 +287,25 @@ test("two-stage command selection preserves streams and failure evidence", async
     clearCache() {},
     async judge(state, questions, options) {
       assert.equal(options?.cache, false);
+      const evidence = state.evidence;
+      assert.ok(
+        evidence && typeof evidence === "object" && "context" in evidence,
+      );
+      const context = evidence.context;
+      assert.ok(
+        context && typeof context === "object" && "effectiveRoot" in context,
+      );
+      const effectiveRoot = context.effectiveRoot;
+      assert.ok(
+        effectiveRoot &&
+          typeof effectiveRoot === "object" &&
+          "path" in effectiveRoot,
+      );
+      assert.equal(typeof effectiveRoot.path, "string");
+      if (Object.hasOwn(questions, "find")) {
+        assert.equal(typeof state.output, "string");
+        assert.equal(effectiveRoot.path, process.cwd());
+      }
       if (!Object.hasOwn(questions, "find")) final = state;
       const p =
         typeof state.output === "string"
@@ -157,7 +316,10 @@ test("two-stage command selection preserves streams and failure evidence", async
       return {
         ok: true,
         answers: Object.fromEntries(
-          Object.keys(questions).map((id) => [id, { type: "bool", p }]),
+          Object.keys(questions).map((id) => [
+            id,
+            { type: "bool", source: "fresh", p },
+          ]),
         ),
         calls: 1,
         questions: Object.keys(questions).length,
@@ -165,7 +327,7 @@ test("two-stage command selection preserves streams and failure evidence", async
     },
   };
   const host = detectHost({});
-  await createAskTool({
+  const result = await createAskTool({
     client,
     host,
     exec,
@@ -191,6 +353,25 @@ test("two-stage command selection preserves streams and failure evidence", async
   );
   assert.match(String(output.stderr), /STDERR: separate diagnostic/);
   assert.doesNotMatch(String(output.stdout), /STDERR/);
+  const report = result.details.result;
+  assert.equal(report.context.command.execution, "finished");
+  assert.deepEqual(report.context.command.exitCode, {
+    status: "known",
+    value: 1,
+  });
+  assert.deepEqual(report.context.command.timedOut, {
+    status: "known",
+    value: false,
+  });
+  assert.ok(report.accounting.auxiliary.passages.fresh > 0);
+  assert.ok(
+    report.diagnostics.some((diagnostic) =>
+      diagnostic.fact.includes("selected passages"),
+    ),
+  );
+  assert.ok(
+    report.actions.some((action) => action.instruction.includes("exact text")),
+  );
 });
 test("command beyond find limit refuses without judgment", async () => {
   const exec: GitExec = async (binary, args) => {
@@ -232,9 +413,21 @@ test("command beyond find limit refuses without judgment", async () => {
     undefined,
     { cwd: process.cwd() },
   );
-  assert.match(
-    result.content[0]?.text ?? "",
-    /more than 40 find calls.*110000 bytes before/,
+  const report = result.details.result;
+  assert.equal(report.execution, "refused");
+  assert.equal(report.context.command.execution, "finished");
+  assert.deepEqual(report.context.command.exitCode, {
+    status: "known",
+    value: 0,
+  });
+  assert.equal(report.accounting.httpAttempts, 0);
+  assert.ok(
+    report.diagnostics.some(
+      (diagnostic) =>
+        diagnostic.cause === "evidence_too_large" &&
+        diagnostic.fact.includes("find calls") &&
+        diagnostic.fact.includes("110000 bytes before"),
+    ),
   );
 });
 test("disabled command is absent from schema and rejected before execution", async () => {
@@ -294,7 +487,10 @@ test("about output command evidence reaches judgment", async () => {
       return {
         ok: true,
         answers: Object.fromEntries(
-          Object.keys(questions).map((id) => [id, { type: "bool", p: 0.99 }]),
+          Object.keys(questions).map((id) => [
+            id,
+            { type: "bool", source: "fresh", p: 0.99 },
+          ]),
         ),
         calls: 1,
         questions: Object.keys(questions).length,
@@ -446,7 +642,7 @@ for (const runner of ["node-relative", "node-absolute", "jest", "pytest", "go"])
             answers: Object.fromEntries(
               Object.keys(questions).map((id) => [
                 id,
-                { type: "bool", p: 0.99 },
+                { type: "bool", source: "fresh", p: 0.99 },
               ]),
             ),
             calls: 1,
@@ -580,7 +776,10 @@ test("line clipping and shape limit are visible without claiming passage selecti
       return {
         ok: true,
         answers: Object.fromEntries(
-          Object.keys(questions).map((id) => [id, { type: "bool", p: 0.99 }]),
+          Object.keys(questions).map((id) => [
+            id,
+            { type: "bool", source: "fresh", p: 0.99 },
+          ]),
         ),
         calls: 1,
         questions: Object.keys(questions).length,

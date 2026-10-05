@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import { type Static, Type } from "@sinclair/typebox";
 import { createAnalysisContext } from "../adapters/analysis-context.ts";
-import { canonicalPath } from "../adapters/canonical-path.ts";
+import {
+  type EvidenceContext,
+  resolveEvidenceContext,
+  withEvidenceContext,
+} from "../adapters/evidence-context.ts";
 import { collectUnits } from "../adapters/git.ts";
 import { resolveBase } from "../adapters/git-base.ts";
 import { shareGitInventory } from "../adapters/git-inventory.ts";
@@ -13,6 +17,7 @@ import {
   CANNOT_TELL_MIN,
   FLAG_MIN,
   STATE_MAX_CHARS,
+  TIMEOUT_MS,
 } from "../constants.ts";
 import { prepareBatches } from "../core/batches.ts";
 import { isTestFile } from "../core/diff.ts";
@@ -23,6 +28,11 @@ import {
   type Envelope,
   type Limitation,
 } from "../core/output.ts";
+import {
+  type Cause,
+  known,
+  type ResultReportV1,
+} from "../core/result-report.ts";
 import type { CallerProof, EvidenceSpan } from "../core/risk-callers.ts";
 import type { EvidenceUnit } from "../core/units.ts";
 import type { GuideContext } from "../guide.ts";
@@ -38,15 +48,18 @@ import {
   prepareRiskMatrix,
   prepareRiskSeverity,
 } from "../presets/risk.ts";
-import { renderEnvelope } from "../render.ts";
+import { renderResultReport } from "../render.ts";
 import type { ToolDependencies } from "../runtime.ts";
 import { CHECK_DIFF_DESCRIPTION } from "../texts/check-diff.ts";
 import { NOT_CONFIGURED } from "../texts/configuration.ts";
+import { CHECK_DIFF_GUIDELINE } from "../texts/instructions.ts";
 import { runDocsCheck } from "./docs-check.ts";
+import { controlsFor, ReviewReport, reportMetrics } from "./review-report.ts";
 import { runSpecCheck } from "./spec-check.ts";
 
 export const checkDiffParameters = Type.Object(
   {
+    root: Type.Optional(Type.String()),
     check: Type.Union([
       Type.Literal("risk"),
       Type.Literal("docs"),
@@ -72,6 +85,8 @@ export const checkDiffParameters = Type.Object(
 export type CheckDiffArgs = Static<typeof checkDiffParameters>;
 export interface RiskDetails {
   ok: boolean;
+  evidenceContext: EvidenceContext;
+  result: ResultReportV1;
   envelope: Envelope;
   judgments: Judgment[];
   callerProofs: CallerProof[];
@@ -96,9 +111,7 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
       : {
           promptSnippet:
             "Check the uncommitted diff for risky changes, stale docs or spec drift",
-          promptGuidelines: [
-            "jev_check_diff: run it once before you report done, not on a half-written diff",
-          ],
+          promptGuidelines: [CHECK_DIFF_GUIDELINE],
         }),
     async execute(
       _id: string,
@@ -108,8 +121,53 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
       ctx: { cwd: string } & GuideContext,
     ) {
       const client = dependencies.client;
-      const cwd = await canonicalPath(ctx.cwd);
+      const evidence = await resolveEvidenceContext(ctx.cwd, args.root, {
+        exec: execute,
+        signal,
+        origin: dependencies.evidenceOrigin,
+      });
+      const evidenceContext = evidence.context;
+      const report = new ReviewReport();
+      const cwd = evidence.ok ? evidence.cwd : evidenceContext.authority.path;
       const exec = shareGitInventory(execute);
+      if (!evidence.ok) {
+        const envelope = buildEnvelope({
+          refusal: evidence.error,
+          yield: {
+            calls: 0,
+            questions: 0,
+            cacheHits: 0,
+            cacheRequests: 0,
+            elapsedMs: 0,
+          },
+        });
+        runtime.session.record(envelope);
+        runtime.guide.deliver(ctx);
+        report.refusal = true;
+        report.diagnose(evidence.cause, evidence.error, args.root);
+        const result = report.build(
+          "jev_check_diff",
+          evidenceContext,
+          reportMetrics(envelope),
+        );
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: renderResultReport(result, { details: envelope }),
+            },
+          ],
+          details: {
+            ok: false,
+            envelope,
+            judgments: [],
+            callerProofs: [],
+            evidenceContext,
+            result,
+          },
+        };
+      }
+      evidenceContext.requestedBase = args.base ?? "HEAD";
       if (args.check === "docs" || args.check === "spec") {
         const deps = { client, host, runtime, exec };
         const result =
@@ -119,6 +177,7 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
                 base: args.base,
                 signal,
                 maxCalls: args.max_calls,
+                evidenceContext,
               })
             : await runSpecCheck(deps, {
                 cwd: cwd,
@@ -126,6 +185,7 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
                 specPath: args.spec_path,
                 signal,
                 maxCalls: args.max_calls,
+                evidenceContext,
               });
         runtime.session.record(result.envelope);
         runtime.guide.deliver(ctx);
@@ -138,9 +198,14 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
         );
         return {
           content: [
-            { type: "text" as const, text: renderEnvelope(result.envelope) },
+            {
+              type: "text" as const,
+              text: renderResultReport(result.result, {
+                details: result.envelope,
+              }),
+            },
           ],
-          details: { ...result, callerProofs: [] },
+          details: { ...result, callerProofs: [], evidenceContext },
           ...hostUsage(host.isOmp, usage),
         };
       }
@@ -155,7 +220,7 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
       let sent = 0;
       let matrixHealthy = true;
       let emptyBase: string | undefined;
-      const finish = (refusal?: string) => {
+      const finish = (refusal?: string, cause?: Cause) => {
         answers.sort((a, b) =>
           (unitOrder.get(a) ?? "").localeCompare(unitOrder.get(b) ?? ""),
         );
@@ -172,7 +237,14 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
           { inputTokens: 0, costUsd: 0 },
         );
         const noFindings =
-          !refusal && matrixHealthy && !answers.length && !unchecked.length;
+          !refusal &&
+          matrixHealthy &&
+          !answers.length &&
+          !unchecked.length &&
+          report.items.size > 0 &&
+          [...report.items.values()].every(
+            (item) => item.treatment === "judged",
+          );
         const envelope = buildEnvelope({
           answers,
           limitations:
@@ -202,7 +274,11 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
           yield: {
             calls: judgments.reduce((n, j) => n + (j.calls ?? 0), 0),
             questions: judgments.reduce((n, j) => n + (j.questions ?? 0), 0),
-            costUsd: usage.costUsd,
+            costUsd:
+              judgments.every((j) => j.usage !== undefined) &&
+              judgments.length > 0
+                ? usage.costUsd
+                : undefined,
             cacheHits: judgments.reduce((n, j) => n + (j.cacheHits ?? 0), 0),
             cacheRequests: judgments.reduce(
               (n, j) => n + (j.cacheRequests ?? 0),
@@ -211,11 +287,38 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
             elapsedMs: performance.now() - started,
           },
         });
+        if (emptyBase !== undefined)
+          report.diagnose(
+            "no_changed_units",
+            `No changed units against ${emptyBase}; no risk judgment requested.`,
+            emptyBase,
+            [],
+            false,
+          );
+        if (
+          refusal &&
+          !report.diagnostics.some((d) => d.effect === "blocking")
+        ) {
+          report.refusal = refusal !== NOT_CONFIGURED;
+          report.diagnose(cause ?? "internal_error", refusal);
+        }
+        const result = report.build(
+          "jev_check_diff",
+          evidenceContext,
+          reportMetrics(envelope),
+        );
         runtime.session.record(envelope);
         runtime.guide.deliver(ctx);
         return {
-          content: [{ type: "text" as const, text: renderEnvelope(envelope) }],
+          content: [
+            {
+              type: "text" as const,
+              text: renderResultReport(result, { details: envelope }),
+            },
+          ],
           details: {
+            evidenceContext,
+            result,
             ok: !refusal,
             envelope,
             judgments,
@@ -224,9 +327,11 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
           ...hostUsage(host.isOmp, usage),
         };
       };
-      if (!client) return finish(NOT_CONFIGURED);
+      if (!client) return finish(NOT_CONFIGURED, "not_configured");
       const comparison = await resolveBase(exec, cwd, args.base, signal);
-      if (!comparison.ok) return finish(comparison.error);
+      if (!comparison.ok)
+        return finish(comparison.error, comparison.cause ?? "invalid_base");
+      evidenceContext.resolvedBase = comparison.base;
       const base = comparison.base;
       const analysis = await createAnalysisContext();
       const collected = await collectUnits(
@@ -238,7 +343,41 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
         },
         analysis.parser,
       );
-      if (!collected.ok) return finish(collected.error);
+      if (!collected.ok)
+        return finish(collected.error, collected.cause ?? "git_failure");
+      const repositoryRoot = await exec(
+        "git",
+        ["rev-parse", "--show-toplevel"],
+        { cwd, timeout: TIMEOUT_MS, signal },
+      );
+      if (
+        !repositoryRoot.code &&
+        !repositoryRoot.killed &&
+        evidenceContext.effectiveRoot
+      )
+        evidenceContext.effectiveRoot.path = repositoryRoot.stdout.trim();
+      report.inventories.push({
+        id: "changed-units",
+        kind: "units",
+        rules: [
+          "Changed source units against resolved base; tests are evidence, not risk units",
+        ],
+        restrictions: args.only ?? [],
+        discovered: known(collected.units.length),
+        considered: known(collected.units.length),
+        scopeRestricted: Boolean(args.only?.length),
+        criteria: [],
+      });
+      for (const unit of collected.units)
+        report.expect(`unit:${unit.id}`, unitLabel(unit), "unit");
+      for (const limit of collected.limits)
+        report.diagnose(
+          limit.kind === "secret_pattern"
+            ? "secret_pattern"
+            : "collection_omitted",
+          `${limit.file}: ${limit.kind}`,
+          limit.file,
+        );
       for (const limit of collected.limits)
         limitations.push({
           fact: `${limit.file}: ${limit.kind}`,
@@ -247,6 +386,12 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
       const readableUnits = collected.units.filter((unit) => {
         if (unit.before !== null || unit.after !== null) return true;
         unchecked.push(`${unitLabel(unit)} source unavailable`);
+        report.diagnose(
+          "binary_or_non_utf8",
+          "Changed source unavailable",
+          unit.file,
+          [`unit:${unit.id}`],
+        );
         return false;
       });
       if (!collected.units.length) {
@@ -258,22 +403,43 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
         ...args,
         testFilesPresent: collected.files.some((file) => isTestFile(file.path)),
       });
-      if (!matrix.ok) return finish(matrix.error);
+      if (!matrix.ok) return finish(matrix.error, "invalid_arguments");
       const prepared = matrix;
-      for (const warning of prepared.warnings) limitations.push(warning);
+      prepared.state = withEvidenceContext(prepared.state, evidenceContext);
+      for (const unit of readableUnits) report.items.delete(`unit:${unit.id}`);
+      for (const cell of prepared.cells)
+        report.expect(
+          `risk:${cell.id}`,
+          `${cell.unitId} ${cell.dimension}`,
+          "unit",
+          `risk:${cell.unitId}`,
+        );
+      for (const warning of prepared.warnings) {
+        limitations.push(warning);
+        report.diagnose(
+          "unsupported_syntax",
+          warning.fact,
+          undefined,
+          [],
+          false,
+        );
+      }
       if (JSON.stringify(prepared.state).length > STATE_MAX_CHARS)
         return finish(
           `risk state exceeds STATE_MAX_CHARS=${STATE_MAX_CHARS}; rerun with base= a nearer ref`,
+          "evidence_too_large",
         );
       const batches = prepareBatches(prepared.state, prepared.questions, {
         groups: prepared.groups,
         witnesses: prepared.witnessQuestionIds,
       });
-      if (!batches.ok) return finish(batches.error);
+      if (!batches.ok) return finish(batches.error, "group_too_large");
       let reservedMatrixCalls = batches.batches.length;
       const optionsFor = (matrixRequest = false): JudgmentOptions => ({
         signal,
         ...runtime.session.requestGate(),
+        admissionCause: () =>
+          budget?.kind === "session" ? "session_budget" : "call_budget",
         beforeRequest(questionCount) {
           if (matrixRequest && reservedMatrixCalls > 0) reservedMatrixCalls--;
           const limit =
@@ -303,6 +469,12 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
         extra?: JudgmentOptions,
         matrixRequest = false,
       ) => {
+        state = withEvidenceContext(state, evidenceContext);
+        if (JSON.stringify(state).length > STATE_MAX_CHARS)
+          return {
+            ok: false as const,
+            error: `required evidence exceeds STATE_MAX_CHARS=${STATE_MAX_CHARS}`,
+          };
         const result = await client.judge(state, questions, {
           ...optionsFor(matrixRequest),
           ...extra,
@@ -323,6 +495,23 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
         : { proofs: [], limits: [] };
       const uncheckedCallers = new Set<string>();
       for (const limit of local.limits) {
+        if (limit.kind !== "dynamic_access_uncovered") {
+          const id = `caller:${limit.unitId}`;
+          report.expect(id, `${limit.unitId} local caller`, "unit");
+          report.diagnose(
+            "collection_omitted",
+            limit.reason,
+            limit.paths.join(" + "),
+            [id],
+          );
+        } else
+          report.diagnose(
+            "dynamic_dependency",
+            limit.reason,
+            limit.paths.join(" + "),
+            [],
+            false,
+          );
         limitations.push({
           fact: `${limit.unitId}: ${limit.reason} — ${limit.paths.join(" + ")}`,
           next: "read the named caller/provider pieces or supply an observation via jev_ask",
@@ -368,6 +557,53 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
             unhealthyQuestionIds: new Map<string, string>(),
           };
       matrixHealthy = health.healthy;
+      for (const failure of health.controls)
+        report.diagnose(
+          health.healthy ? "conservative_widening" : "control_failure",
+          failure.fact,
+          undefined,
+          prepared.cells
+            .filter((cell) => health.unhealthyQuestionIds.has(cell.id))
+            .map((cell) => `risk:${cell.id}`),
+          false,
+        );
+      report.countControls(result, prepared.witnessQuestionIds);
+      for (const cell of prepared.cells) {
+        const rawAnswer = result.ok ? result.answers[cell.id] : undefined;
+        const answer =
+          rawAnswer?.type === "unjudged" && !rawAnswer.cause && budget
+            ? {
+                ...rawAnswer,
+                cause:
+                  budget.kind === "session"
+                    ? ("session_budget" as const)
+                    : ("call_budget" as const),
+              }
+            : rawAnswer;
+        const invalid = health.unhealthyQuestionIds.get(cell.id);
+        if (!result.ok)
+          report.failure(
+            result,
+            [`risk:${cell.id}`],
+            budget
+              ? budget.kind === "session"
+                ? "session_budget"
+                : "call_budget"
+              : undefined,
+          );
+        else
+          report.answer(
+            `risk:${cell.id}`,
+            answer,
+            {
+              band: invalid ? "unsure" : "verdict",
+              reason: invalid,
+              uncalibrated: cell.uncalibrated,
+            },
+            controlsFor(cell.id, result, prepared.witnessQuestionIds),
+            false,
+          );
+      }
       const decoys = new Set(
         prepared.witnesses
           .filter((witness) => witness.expected === "no")
@@ -428,16 +664,36 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
       for (const { proof, result: localResult } of locals) {
         callerProofs.push(proof);
         const unit = collected.units.find((u) => u.id === proof.unitId);
-        if (!unit) continue;
-        const answer = localResult.ok ? localResult.answers.caller : undefined;
+        const reportId = `caller:${proof.unitId}`;
+        report.expect(
+          reportId,
+          `${unit ? unitLabel(unit) : proof.unitId} local caller`,
+          "unit",
+        );
+        if (!localResult.ok) {
+          report.failure(
+            localResult,
+            [reportId],
+            budget
+              ? budget.kind === "session"
+                ? "session_budget"
+                : "call_budget"
+              : undefined,
+          );
+          continue;
+        }
+        const answer = localResult.answers.caller;
         if (answer?.type !== "choice") {
-          unchecked.push(`${unitLabel(unit)} local caller`);
+          report.answer(reportId, answer);
+          unchecked.push(
+            `${unit ? unitLabel(unit) : proof.unitId} local caller`,
+          );
           continue;
         }
         const p = answer.probabilities.new_failure ?? 0;
         const missing =
           (answer.probabilities.cannot_tell ?? 0) >= CANNOT_TELL_MIN;
-        if (!missing && p < BAND_BOOL_GRAY_A) continue;
+        const negative = !missing && p < BAND_BOOL_GRAY_A;
         const merged: EvidenceSpan[] = [];
         for (const span of [...proof.paths].sort(
           (a, b) =>
@@ -458,15 +714,45 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
           .map((span) => `${span.path}:${span.start}-${span.end}`)
           .join(" + ");
         const line: AnswerInput = {
-          label: `${unitLabel(unit)} reliability — static code only; ${passages}${omitted ? ` (+${omitted} passages)` : ""}`,
+          label: `${unit ? unitLabel(unit) : proof.unitId} reliability — static code only; ${passages}${omitted ? ` (+${omitted} passages)` : ""}`,
           value: {
-            head: missing ? "cannot_tell" : "new_failure",
-            p: missing ? (answer.probabilities.cannot_tell ?? 0) : p,
+            head: missing
+              ? "cannot_tell"
+              : negative
+                ? "no_new_failure"
+                : "new_failure",
+            p: missing
+              ? (answer.probabilities.cannot_tell ?? 0)
+              : negative
+                ? (answer.probabilities.no_new_failure ?? 0)
+                : p,
           },
-          band: missing ? "abstain" : p >= FLAG_MIN ? "verdict" : "unsure",
-          missing:
-            "actual provider or binding missing; supply its declaration or an observation via jev_ask",
+          band: missing
+            ? "abstain"
+            : negative || p >= FLAG_MIN
+              ? "verdict"
+              : "unsure",
+          reason: missing
+            ? "actual provider or binding missing; supply its declaration or an observation via jev_ask"
+            : negative
+              ? "Local caller check does not flag a new failure; static evidence does not prove every caller safe."
+              : p < FLAG_MIN
+                ? "Local caller new-failure probability is in the gray band; inspect the stated proof passages natively."
+                : "Local caller new-failure probability meets the finding threshold; static code evidence only.",
         };
+        const callerItem = report.items.get(reportId);
+        if (callerItem)
+          report.items.set(reportId, { ...callerItem, label: line.label });
+        report.answer(reportId, answer, line);
+        if (missing && line.reason)
+          report.diagnose(
+            "missing_required",
+            line.reason,
+            line.label,
+            [reportId],
+            false,
+          );
+        if (!unit || negative) continue;
         answers.push(line);
         unitOrder.set(line, unit.id);
         if (!missing && p >= FLAG_MIN) {
@@ -494,6 +780,23 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
             item.evidence?.callerEvidence,
           );
           const value = await judge(request.state, request.questions);
+          const reportId = `severity:${item.unit.id}:${item.dimension}`;
+          report.expect(
+            reportId,
+            `${item.unit.id} ${item.dimension} severity`,
+            "unit",
+          );
+          if (value.ok) report.answer(reportId, value.answers.severity);
+          else
+            report.failure(
+              value,
+              [reportId],
+              budget
+                ? budget.kind === "session"
+                  ? "session_budget"
+                  : "call_budget"
+                : undefined,
+            );
           const answer = value.ok ? value.answers.severity : undefined;
           if (answer?.type === "score") {
             const suffix = ` · severity ${answer.score.toFixed(1)}/3`;

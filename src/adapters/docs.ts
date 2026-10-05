@@ -5,6 +5,7 @@ import {
 } from "../core/docs.ts";
 import type { GitExec } from "../core/git.ts";
 import type { Result } from "../result.ts";
+import type { Cause } from "../result-types.ts";
 import {
   checkFileAdmission,
   openRepoFile,
@@ -20,7 +21,7 @@ export interface DocsInventory {
   cwd: string;
   files: DocsSource[];
   tracked: ReadonlySet<string>;
-  limits: { path: string; reason: string }[];
+  limits: { path: string; reason: string; cause?: Cause }[];
   read: (path: string) => Promise<DocsSource | undefined>;
 }
 /** Inventory paths eagerly, but load only Markdown/configuration and subsequently reached sources. */
@@ -37,6 +38,7 @@ export async function collectDocsInventory(
   if (root.code || root.killed)
     return {
       ok: false,
+      cause: signal?.aborted ? "cancelled" : "git_failure",
       error: root.stderr.trim() || "Repository root not found.",
     };
   cwd = root.stdout.trim();
@@ -48,6 +50,7 @@ export async function collectDocsInventory(
   if (list.code || list.killed)
     return {
       ok: false,
+      cause: signal?.aborted ? "cancelled" : "git_failure",
       error: list.stderr.trim() || "Unable to inventory tracked files.",
     };
   const tracked = new Set(list.stdout.split("\0").filter(Boolean));
@@ -70,7 +73,11 @@ export async function collectDocsInventory(
           inventory: tracked,
         });
         if (!opened.ok) {
-          limits.push({ path, reason: opened.error });
+          limits.push({
+            path,
+            reason: opened.error,
+            ...(opened.cause ? { cause: opened.cause } : {}),
+          });
           return undefined;
         }
         const handle = opened.handle;
@@ -168,18 +175,22 @@ export function docsDeclarationSearch(
             const path = candidates[index++];
             if (path === undefined) return;
             const location = await resolveInsideRepo(inventory.cwd, path);
-            const admitted =
-              location.ok &&
-              (
-                await checkFileAdmission(
+            const admission = location.ok
+              ? await checkFileAdmission(
                   inventory.cwd,
                   location.rel,
                   exec,
                   signal,
                   inventory.tracked,
                 )
-              ).ok;
-            if (admitted) paths.push(path);
+              : location;
+            if (admission.ok) paths.push(path);
+            else if (admission.cause === "secret_pattern")
+              inventory.limits.push({
+                path,
+                reason: admission.error,
+                cause: admission.cause,
+              });
           }
         }),
       );
@@ -188,12 +199,20 @@ export function docsDeclarationSearch(
     const paths = await admittedPaths;
     if (!paths.length) return new Map();
     const patterns = ["-e", docsDeclarationPattern(names)];
-    const result = await exec("rg", ["--json", ...patterns, "--", ...paths], {
-      cwd: inventory.cwd,
-      timeout: TIMEOUT_MS,
-      signal,
-    });
-    if (result.killed || (result.code !== 0 && result.code !== 1)) {
+    let result:
+      | { stdout: string; stderr: string; code: number; killed: boolean }
+      | undefined;
+    try {
+      result = await exec("rg", ["--json", ...patterns, "--", ...paths], {
+        cwd: inventory.cwd,
+        timeout: TIMEOUT_MS,
+        signal,
+      });
+    } catch {
+      // A missing or unstartable rg is an unavailable search, not a failure.
+      signal?.throwIfAborted();
+    }
+    if (!result || result.killed || (result.code !== 0 && result.code !== 1)) {
       inventory.limits.push({
         path: "documentation",
         reason: "declaration search unavailable",

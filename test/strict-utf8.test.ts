@@ -22,11 +22,29 @@ import { Session } from "../src/session.ts";
 import { createCheckDiffTool } from "../src/tools/check-diff.ts";
 
 const execute = promisify(execFile);
-const exec: GitExec = async (command, args, options) => ({
-  ...(await execute(command, args, options)),
-  code: 0,
-  killed: false,
-});
+const exec: GitExec = async (command, args, options) => {
+  try {
+    return {
+      ...(await execute(command, args, options)),
+      code: 0,
+      killed: false,
+    };
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      "stdout" in error &&
+      "stderr" in error &&
+      "code" in error
+    )
+      return {
+        stdout: String(error.stdout),
+        stderr: String(error.stderr),
+        code: Number(error.code),
+        killed: "killed" in error && error.killed === true,
+      };
+    throw error;
+  }
+};
 async function fixture(
   t: test.TestContext,
   bytes: string | Buffer,
@@ -277,6 +295,7 @@ for (const readableChange of [false, true]) {
                 id,
                 {
                   type: "choice" as const,
+                  source: "fresh" as const,
                   choice: id === "drift" ? "none" : "not_touched",
                   confidence: 1,
                   probabilities: Object.fromEntries(
@@ -308,15 +327,22 @@ for (const readableChange of [false, true]) {
       undefined,
       { cwd },
     );
-    const output = result.content[0]?.text ?? "";
-    assert.match(output, /unchecked/);
-    assert.match(output, /src\/small\.ts.*changed source unavailable/);
-    assert.match(output, /src\/big\.ts.*changed source unavailable/);
-    assert.match(output, /REQ-1.*changed source unavailable/);
-    assert.match(output, /drift.*changed source unavailable/);
-    assert.doesNotMatch(
-      output,
-      /spec: no violations or drift reported|undefined-undefined/,
+    assert.ok(
+      result.details.result.diagnostics.some(
+        (diagnostic) => diagnostic.cause === "binary_or_non_utf8",
+      ),
+    );
+    for (const path of ["src/small.ts", "src/big.ts"])
+      assert.ok(
+        result.details.result.diagnostics.some(
+          (diagnostic) =>
+            diagnostic.target.status === "known" &&
+            diagnostic.target.value === path,
+        ),
+      );
+    assert.equal(
+      result.details.result.execution,
+      readableChange ? "partial" : "not_judged",
     );
   });
 }
@@ -339,6 +365,23 @@ test("ask historical proof rejects malformed UTF-8 and preserves verified replac
       if (!before.ok) assert.match(before.error, /source.ts.*not UTF-8 text/);
     }
   }
+  const cwd = await fixture(t, "valid historical text");
+  const repository = await collectAskRepository(
+    async (command, args, options) => {
+      if (args[0] === "check-ignore")
+        throw new Error("historical admission execution failed");
+      return exec(command, args, options);
+    },
+    cwd,
+    "HEAD",
+  );
+  assert.ok(repository.ok);
+  const before = await repository.readBefore("source.ts");
+  assert.deepEqual(before, {
+    ok: false,
+    error: "Error: historical admission execution failed",
+  });
+  assert.strictEqual(await repository.readBefore("source.ts"), before);
 });
 
 test("NUL-containing binary inventory sources retain their existing empty-text contract", async (t) => {

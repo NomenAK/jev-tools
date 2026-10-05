@@ -7,6 +7,7 @@ import {
 } from "../constants.ts";
 import { type DiffFile, parseDiff } from "../core/diff.ts";
 import type { GitExec } from "../core/git.ts";
+import { isSecretPath } from "../core/secret-path.ts";
 import {
   buildUnits,
   type EvidenceUnit,
@@ -22,7 +23,12 @@ import { decodeUtf8, verifyGitUtf8 } from "./utf8.ts";
 
 export type CollectionResult<T> =
   | Result<T>
-  | { ok: false; kind: "inconsistent_diff"; error: string };
+  | {
+      ok: false;
+      kind: "inconsistent_diff";
+      cause: "git_failure";
+      error: string;
+    };
 export interface DiffOptions {
   cwd: string;
   base: string;
@@ -62,13 +68,22 @@ async function git(
     if (result.killed)
       return {
         ok: false,
+        cause: options.signal?.aborted ? "cancelled" : "git_failure",
         error: "Git interrupted (cancelled or timed out).",
       };
     if (result.code !== 0)
-      return { ok: false, error: `Git failed: ${result.stderr}` };
+      return {
+        ok: false,
+        cause: "git_failure",
+        error: `Git failed: ${result.stderr}`,
+      };
     return { ok: true, text: result.stdout };
   } catch (error) {
-    return { ok: false, error: `Unable to execute git: ${String(error)}` };
+    return {
+      ok: false,
+      cause: options.signal?.aborted ? "cancelled" : "git_failure",
+      error: `Unable to execute git: ${String(error)}`,
+    };
   }
 }
 type ReadSource = {
@@ -233,13 +248,21 @@ export async function collectDiff(
   } catch {
     return {
       ok: false,
+      cause: "git_failure",
       error: "Inconsistent Git snapshots; collect again.",
       kind: "inconsistent_diff",
     };
   }
   const unsupported: string[] = [];
+  // Secret-named paths (either side of a rename) stay named exclusions;
+  // excluding them from every later pathspec keeps Git from emitting their
+  // patch text or pairing them into a rename.
+  const secret = candidates
+    .filter((file) => isSecretPath(file.path) || isSecretPath(file.oldPath))
+    .map((file) => file.path);
   await Promise.all(
     candidates.map(async (file) => {
+      if (secret.includes(file.path)) return;
       try {
         const stat = await lstat(resolve(cwd, file.path));
         if (
@@ -254,7 +277,11 @@ export async function collectDiff(
       }
     }),
   );
-  for (const path of unsupported) paths.push(`:(top,exclude,literal)${path}`);
+  for (const path of [...unsupported, ...secret])
+    paths.push(`:(top,exclude,literal)${path}`);
+  for (const file of candidates)
+    if (secret.includes(file.path) && file.oldPath !== file.path)
+      paths.push(`:(top,exclude,literal)${file.oldPath}`);
   const prefix = [
     "diff",
     "--no-color",
@@ -329,7 +356,11 @@ export async function collectDiff(
     !current.ok ||
     !base.ok
   )
-    return { ok: false, error: "Incomplete Git collection." };
+    return {
+      ok: false,
+      cause: "git_failure",
+      error: "Incomplete Git collection.",
+    };
   const currentInventory = new Set(current.text.split("\0").filter(Boolean));
   const baseInventory = new Map<string, string>();
   for (const entry of base.text.split("\0")) {
@@ -348,17 +379,23 @@ export async function collectDiff(
   } catch {
     return {
       ok: false,
+      cause: "git_failure",
       error: "Inconsistent Git snapshots; collect again.",
       kind: "inconsistent_diff",
     };
   }
-  files.push(...candidates.filter((file) => unsupported.includes(file.path)));
+  files.push(
+    ...candidates.filter(
+      (file) => unsupported.includes(file.path) || secret.includes(file.path),
+    ),
+  );
   const objects = new Map<string, { id: string; size: number }>();
   for (const file of files) {
     if (
       /^[A?]/.test(file.status) ||
       file.binary ||
-      unsupported.includes(file.path)
+      unsupported.includes(file.path) ||
+      secret.includes(file.path)
     )
       continue;
     const admission = await admitGitPath(
@@ -387,6 +424,18 @@ export async function collectDiff(
   const collectFile = async (
     file: DiffFile,
   ): Promise<CollectionResult<{ file: SourceFile }>> => {
+    if (secret.includes(file.path))
+      return {
+        ok: true,
+        file: {
+          ...file,
+          hunks: [],
+          binary: false,
+          before: null,
+          after: null,
+          limitation: "secret_pattern",
+        },
+      };
     const historical = !/^[A?]/.test(file.status);
     const admission = historical
       ? await admitGitPath(
@@ -453,7 +502,11 @@ export async function collectDiff(
     if (!/^[A?]/.test(file.status)) {
       const object = objects.get(file.oldPath);
       if (!object)
-        return { ok: false, error: "Incomplete Git base tree; collect again." };
+        return {
+          ok: false,
+          cause: "git_failure",
+          error: "Incomplete Git base tree; collect again.",
+        };
       if (object.size > STATE_MAX_CHARS) limitation = "too_large";
       else if (loaded.invalid.has(object.id)) limitation = "not UTF-8 text";
       else before = loaded.blobs.get(object.id) ?? "";

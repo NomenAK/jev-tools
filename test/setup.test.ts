@@ -277,7 +277,11 @@ test("setup immediately enables an already registered tool and replacement uses 
       { cwd: f.directory },
     );
   try {
-    assert.match((await invoke()).content[0]?.text ?? "", /JEV_TOOLS_URL/);
+    assert.ok(
+      (await invoke()).details.result.diagnostics.some(
+        (diagnostic) => diagnostic.cause === "not_configured",
+      ),
+    );
     for (const [model, key] of [
       ["first-model", "first-key"],
       ["second-model", "second-key"],
@@ -287,7 +291,9 @@ test("setup immediately enables an already registered tool and replacement uses 
       f.selections.push("This session only");
       await f.setup();
       const result = await invoke();
-      assert.match(result.content[0]?.text ?? "", /yes/);
+      const item = result.details.result.items[0];
+      assert.ok(item?.treatment === "judged");
+      assert.equal(item.judgment.result, true);
       assert.equal(requests.at(-1)?.model, model);
       assert.equal(requests.at(-1)?.authorization, `Bearer ${key}`);
       assert(!JSON.stringify(result).includes(key));

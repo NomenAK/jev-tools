@@ -30,16 +30,30 @@ function nonempty(value: string | undefined): value is string {
 
 function validate(values: ConfigurationValues): void {
   let validUrl = false;
+  let insecureTransport = false;
   try {
     const url = new URL(values.url);
-    validUrl =
+    const host = url.hostname.toLowerCase();
+    const loopback =
+      host === "127.0.0.1" ||
+      host === "localhost" ||
+      host === "::1" ||
+      host === "[::1]";
+    const wellFormed =
       /^https?:\/\//i.test(values.url) &&
       (url.protocol === "http:" || url.protocol === "https:") &&
       url.hostname !== "" &&
       url.username === "" &&
       url.password === "";
+    insecureTransport = wellFormed && url.protocol === "http:" && !loopback;
+    validUrl = wellFormed && (url.protocol === "https:" || loopback);
   } catch {
     // Keep user-controlled URL and credentials out of error messages.
+  }
+  if (insecureTransport) {
+    throw new Error(
+      "Jev configuration refuses plain http: to a non-loopback host; use https: or an http: loopback URL (127.0.0.1, ::1 or localhost).",
+    );
   }
   if (
     !validUrl ||
@@ -48,7 +62,7 @@ function validate(values: ConfigurationValues): void {
     !nonempty(values.model)
   ) {
     throw new Error(
-      "Jev configuration requires a full HTTP(S) URL without embedded credentials, a nonempty HTTP-header-compatible API key, and a nonempty model.",
+      "Jev configuration requires a full https: URL (or http: to 127.0.0.1, ::1 or localhost) without embedded credentials, a nonempty HTTP-header-compatible API key, and a nonempty model.",
     );
   }
 }

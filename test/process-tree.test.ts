@@ -144,7 +144,10 @@ test(
           calls: 1,
           questions: Object.keys(questions).length,
           answers: Object.fromEntries(
-            Object.keys(questions).map((id) => [id, { type: "bool", p: 0.9 }]),
+            Object.keys(questions).map((id) => [
+              id,
+              { type: "bool", p: 0.9, source: "fresh" },
+            ]),
           ),
         };
       },

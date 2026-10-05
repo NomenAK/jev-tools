@@ -34,6 +34,7 @@ export async function readLocateFile(
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(path))
     return {
       ok: false,
+      cause: "forbidden_path",
       error: `Internal URLs are not files; use read for ${path}.`,
     };
   const opened = await openRepoFile(cwd, path, { exec, signal });
@@ -41,7 +42,12 @@ export async function readLocateFile(
   const handle = opened.handle;
   try {
     const stat = await handle.stat();
-    if (!stat.isFile()) return { ok: false, error: `Not a file: ${path}.` };
+    if (!stat.isFile())
+      return {
+        ok: false,
+        cause: "file_unavailable",
+        error: `Not a file: ${path}.`,
+      };
     const buffer = Buffer.alloc(
       Math.min(stat.size + 1, LOCATE_WHOLE_MAX_BYTES + 1),
     );
@@ -58,10 +64,19 @@ export async function readLocateFile(
       count += read.bytesRead;
     }
     if (buffer.subarray(0, count).includes(0))
-      return { ok: false, error: `Not a text file: ${path}.` };
+      return {
+        ok: false,
+        cause: "binary_or_non_utf8",
+        error: `Not a text file: ${path}.`,
+      };
     if (count < buffer.length) {
       const decoded = decodeUtf8(buffer.subarray(0, count));
-      if (!decoded.ok) return { ok: false, error: `${path}: ${decoded.error}` };
+      if (!decoded.ok)
+        return {
+          ok: false,
+          cause: "binary_or_non_utf8",
+          error: `${path}: ${decoded.error}`,
+        };
       const text = decoded.text;
       if (text.length <= LOCATE_WHOLE_MAX_CHARS)
         return {
@@ -85,7 +100,11 @@ export async function readLocateFile(
         }
       : scan;
   } catch (error) {
-    return { ok: false, error: `Cannot read ${path}: ${String(error)}` };
+    return {
+      ok: false,
+      cause: signal?.aborted ? "cancelled" : "file_unavailable",
+      error: `Cannot read ${path}: ${String(error)}`,
+    };
   } finally {
     await handle.close();
   }
@@ -171,26 +190,49 @@ export async function scanRange(
         break;
       }
       if (buffer.subarray(0, read.bytesRead).includes(0))
-        return { ok: false, error: `Not a text file: ${path}.` };
+        return {
+          ok: false,
+          cause: "binary_or_non_utf8",
+          error: `Not a text file: ${path}.`,
+        };
       bytes += read.bytesRead;
       const decoded = decode(buffer.subarray(0, read.bytesRead));
-      if (!decoded.ok) return { ok: false, error: `${path}: ${decoded.error}` };
+      if (!decoded.ok)
+        return {
+          ok: false,
+          cause: "binary_or_non_utf8",
+          error: `${path}: ${decoded.error}`,
+        };
       if (!consume(decoded.text))
         return {
           ok: false,
+          cause: "evidence_too_large",
           error: `Selected range exceeds ${STATE_MAX_CHARS} chars; read a narrower range directly.`,
         };
       if (range && line > range.end) break;
     }
     const end = reachedEof ? decode() : { ok: true as const, text: "" };
-    if (!end.ok) return { ok: false, error: `${path}: ${end.error}` };
+    if (!end.ok)
+      return {
+        ok: false,
+        cause: "binary_or_non_utf8",
+        error: `${path}: ${end.error}`,
+      };
     if (!consume(end.text))
-      return { ok: false, error: "Selected range too large." };
+      return {
+        ok: false,
+        cause: "evidence_too_large",
+        error: "Selected range too large.",
+      };
     const lines = line - Number(!pending);
     if (lines > 0 && (windows.at(-1)?.end ?? 0) < lines) finishWindow(lines);
     return { ok: true, bytes, lines, windows, text };
   } catch (error) {
-    return { ok: false, error: `Cannot read ${path}: ${String(error)}` };
+    return {
+      ok: false,
+      cause: signal?.aborted ? "cancelled" : "file_unavailable",
+      error: `Cannot read ${path}: ${String(error)}`,
+    };
   } finally {
     await handle.close();
   }

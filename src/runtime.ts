@@ -13,4 +13,10 @@ export interface ToolDependencies {
   host: Host;
   runtime: ToolRuntime;
   exec: GitExec;
+  evidenceOrigin?: "host" | "server";
+  /**
+   * Configured Jev API key (environment or saved configuration), redacted
+   * from command output before it can reach a state.
+   */
+  apiKey?: string | undefined;
 }

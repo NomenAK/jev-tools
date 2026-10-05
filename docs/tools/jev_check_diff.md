@@ -18,6 +18,7 @@ Changed declarations, slices, files or hunks become before/after evidence units.
 
 | Field | Type / default | Meaning |
 |---|---|---|
+| `root` | Optional nonempty string | Exact initial Git root or registered worktree of the same repository; see [evidence-root admission](../../README.md#evidence-root). |
 | `check` | Required `"risk"`, `"docs"` or `"spec"` | Select the preset below. |
 | `base` | Optional nonempty Git ref, default `HEAD` | Compare the current tree, including untracked files, with this revision. |
 | `spec_path` | Optional nonempty repository-relative string | Required for `spec`: Markdown specification with `### REQ-…` headings. |
@@ -36,7 +37,7 @@ For replaced member accesses, separate local-caller checks inspect statically re
 
 ### docs
 
-Judge up to 40 existing tracked Markdown sections mentioning changed code or importing source, and identify the existing sentence made false. Collection and traversal limits are visible. This is not an exhaustive detector of missing documentation, arbitrary companion edits or every stale sentence.
+Judge up to 40 existing tracked Markdown sections mentioning changed code or importing source, and identify an existing sentence that may no longer match the change. Collection and traversal limits remain material reservations in the report. This is not an exhaustive detector of missing documentation, arbitrary companion edits or every stale sentence; inspect the sentence against the code before changing it.
 
 ### spec
 
@@ -63,6 +64,8 @@ For another preset, use `{"check":"docs","base":"HEAD"}` or `{"check":"spec","ba
 ## Results and next action
 
 Findings name the evidence unit, stale sentence or requirement and its probability. Fixed findings require at least 0.7. Docs probabilities from 0.2 up to 0.7 are unsure without an additional judgment; read the indicated wording. Local-caller probabilities between 0.2 and 0.7 are unsure; `cannot_tell` at least 0.3 is abstain naming the missing provider or binding. Failed witness batches remain unsure. Read flagged source, callers or documentation before editing and preserve unresolved uncertainty in reports. See [shared result reading](../../README.md#read-the-results).
+
+Structured items retain negative as well as positive review results, actual control values and fresh/cache provenance. Budget-exhausted or incomplete groups are unjudged, not negative findings. Documentation completeness limits, collection omissions and witness failures remain scoped diagnostics even when another part of the review yields usable results.
 
 ## Limits and failure behavior
 

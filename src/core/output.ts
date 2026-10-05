@@ -6,6 +6,7 @@ import {
   LIMIT_DISPLAY_MAX_PATHS,
 } from "../constants.ts";
 import type { Answer } from "../jev/types.ts";
+import type { Item, RawValue } from "../result-types.ts";
 
 export interface Limitation {
   fact: string;
@@ -39,6 +40,14 @@ interface CandidateFields {
 export type BandPolicy = (value: DisplayValue, input: AnswerInput) => Band;
 export type BudgetRefusal = { kind: "max_calls" | "session"; message: string };
 export interface AnswerInput extends CandidateFields {
+  unjudged?: boolean;
+  source?: "fresh" | "cache";
+  publicResult?: string | number | boolean;
+  rawValues?: RawValue[];
+  reportControls?: Extract<
+    Item,
+    { treatment: "judged" }
+  >["judgment"]["controls"];
   label: string;
   answer?: Exclude<Answer, { type: "unjudged" }>;
   value?: DisplayValue;
@@ -55,6 +64,13 @@ export type OutputLine =
       value: DisplayValue;
       band: Band;
       uncalibrated: boolean;
+      source?: "fresh" | "cache";
+      publicResult?: string | number | boolean;
+      rawValues?: RawValue[];
+      reportControls?: Extract<
+        Item,
+        { treatment: "judged" }
+      >["judgment"]["controls"];
       reason?: string;
     })
   | { type: "unjudged"; label: string; reason: string; next: string }
@@ -163,6 +179,16 @@ export function buildEnvelope(input: EnvelopeInput): Envelope {
     .map((control) => control.fact)
     .join("; ");
   for (const item of input.answers ?? []) {
+    if (item.unjudged) {
+      lines.push({
+        type: "unjudged",
+        label: item.label,
+        reason: item.reason ?? "required group answer missing",
+        next:
+          item.missing ?? "inspect the available evidence without a judgment",
+      });
+      continue;
+    }
     const value = displayValue(item);
     const initial = item.band ?? (input.policy ?? askBand)(value, item);
     const band = initial === "verdict" && failed ? "unsure" : initial;
@@ -180,6 +206,14 @@ export function buildEnvelope(input: EnvelopeInput): Envelope {
       value,
       band,
       uncalibrated: item.uncalibrated ?? false,
+      ...((item.source ?? item.answer?.source)
+        ? { source: item.source ?? item.answer?.source }
+        : {}),
+      ...(item.publicResult !== undefined
+        ? { publicResult: item.publicResult }
+        : {}),
+      ...(item.rawValues ? { rawValues: item.rawValues } : {}),
+      ...(item.reportControls ? { reportControls: item.reportControls } : {}),
       ...(reason ? { reason } : {}),
       ...(item.orderDependent !== undefined
         ? { orderDependent: item.orderDependent }

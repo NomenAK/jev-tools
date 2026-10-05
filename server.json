@@ -3,7 +3,7 @@
   "name": "io.github.NomenAK/jev-agent-tools",
   "title": "Jev agent tools",
   "description": "Evidence-oriented code questions, diff review and test selection via a Jev endpoint.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "repository": {
     "url": "https://github.com/NomenAK/jev-tools",
     "source": "github"
@@ -14,7 +14,7 @@
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "jev-agent-tools",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "runtimeHint": "npx",
       "transport": {
         "type": "stdio"

@@ -204,7 +204,8 @@ test("invalid answers are never cached; result mutation cannot alter the cache",
   const next = await e.client.judge({}, { q });
   if (next.ok && next.answers.q?.type === "bool") next.answers.q.p = 0;
   const hit = await e.client.judge({}, { q });
-  if (hit.ok) assert.deepEqual(hit.answers.q, { type: "bool", p: 0.9 });
+  if (hit.ok)
+    assert.deepEqual(hit.answers.q, { type: "bool", p: 0.9, source: "cache" });
   assert.equal(e.requests.length, 2);
 });
 test("responses in flight at session reset cannot populate the next cache", async () => {
@@ -245,11 +246,11 @@ test("cached groups preserve their own divergent witness", async () => {
   assert.equal(hit.calls, 0);
   assert.deepEqual(
     hit.batches?.find((b) => b.questionIds.includes("a"))?.answers.w,
-    { type: "bool", p: 0.4 },
+    { type: "bool", p: 0.4, source: "cache" },
   );
   assert.deepEqual(
     hit.batches?.find((b) => b.questionIds.includes("b"))?.answers.w,
-    { type: "bool", p: 0.1 },
+    { type: "bool", p: 0.1, source: "cache" },
   );
 });
 test("invalid group IDs return errors without sending", async () => {

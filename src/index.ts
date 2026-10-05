@@ -34,6 +34,9 @@ export default function extension(api: ExtensionAPI & { pi?: unknown }): void {
     get client() {
       return config.client;
     },
+    get apiKey() {
+      return config.values().apiKey || undefined;
+    },
     host,
     runtime,
     exec: api.exec.bind(api),

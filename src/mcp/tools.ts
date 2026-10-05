@@ -4,18 +4,21 @@ import { spawnExec } from "../adapters/exec.ts";
 import { ConfigController } from "../configuration.ts";
 import { MCP_VALIDATION_MAX_ERRORS } from "../constants.ts";
 import type { GitExec } from "../core/git.ts";
+import { type ResultReportV1, resultIsError } from "../core/result-report.ts";
 import { Guide } from "../guide.ts";
 import { mcpHost } from "../host.ts";
 import type { JevClient } from "../jev/types.ts";
+import { mcpStructuredResultSchema } from "../report-schema.ts";
 import type { ToolDependencies } from "../runtime.ts";
 import { readSessionLimits, Session } from "../session.ts";
+import { renderAgentInstructions } from "../texts/instructions.ts";
 import { createAskTool } from "../tools/ask.ts";
 import { createAskFilesTool } from "../tools/ask-files.ts";
 import { createCheckDiffTool } from "../tools/check-diff.ts";
 import { createFindFilesTool } from "../tools/find.ts";
 import { createLocateTool } from "../tools/locate.ts";
 import { createSelectTestsTool } from "../tools/select-tests.ts";
-import type { McpTool } from "./protocol.ts";
+import { McpInvalidParams, type McpTool } from "./protocol.ts";
 
 /** The shape every tool factory already returns for pi/omp. */
 interface HarnessTool {
@@ -30,7 +33,10 @@ interface HarnessTool {
     signal: AbortSignal | undefined,
     update: unknown,
     ctx: { cwd: string },
-  ): Promise<{ content: { type: "text"; text: string }[] }>;
+  ): Promise<{
+    content: { type: "text"; text: string }[];
+    details: { result: ResultReportV1 };
+  }>;
 }
 
 export interface McpToolOptions {
@@ -63,22 +69,26 @@ function validationError(schema: TSchema, value: unknown): string | undefined {
 export async function loadMcpClient(
   env: NodeJS.ProcessEnv,
   configDirectory?: string,
-): Promise<{ client?: JevClient; warning?: string }> {
+): Promise<{ client?: JevClient; apiKey?: string; warning?: string }> {
   try {
     const controller = new ConfigController({
       env,
       ...(configDirectory ? { directory: configDirectory } : {}),
     });
+    const configured = () =>
+      controller.client
+        ? { client: controller.client, apiKey: controller.values().apiKey }
+        : {};
     try {
       await controller.initialize({});
     } catch (error) {
       // Saved storage unusable: environment configuration (if any) still applies.
       return {
-        ...(controller.client ? { client: controller.client } : {}),
+        ...configured(),
         warning: error instanceof Error ? error.message : String(error),
       };
     }
-    return controller.client ? { client: controller.client } : {};
+    return configured();
   } catch (error) {
     return { warning: error instanceof Error ? error.message : String(error) };
   }
@@ -97,12 +107,14 @@ export async function createMcpTools(options: McpToolOptions): Promise<{
   const env = options.env ?? process.env;
   const host = mcpHost();
   const loaded = options.client
-    ? { client: options.client }
+    ? { client: options.client, apiKey: env.JEV_TOOLS_API_KEY }
     : await loadMcpClient(env, options.configDirectory);
   const client = loaded.client;
   const dependencies: ToolDependencies = {
     client,
+    apiKey: loaded.apiKey,
     host,
+    evidenceOrigin: "server",
     runtime: {
       session: new Session(readSessionLimits(env)),
       guide: new Guide(host),
@@ -138,10 +150,10 @@ export async function createMcpTools(options: McpToolOptions): Promise<{
         // Evidence is sent to the configured judgment endpoint.
         openWorldHint: true,
       },
+      outputSchema: mcpStructuredResultSchema as McpTool["inputSchema"],
       async call(args, signal) {
         const invalid = validationError(tool.parameters, args);
-        if (invalid)
-          return { content: [{ type: "text", text: invalid }], isError: true };
+        if (invalid) throw new McpInvalidParams(invalid);
         const result = await tool.execute(
           `mcp-${++id}`,
           args as never,
@@ -149,14 +161,15 @@ export async function createMcpTools(options: McpToolOptions): Promise<{
           undefined,
           { cwd: options.root },
         );
-        return { content: result.content };
+        return {
+          content: result.content,
+          structuredContent: { result: result.details.result },
+          ...(resultIsError(result.details.result) ? { isError: true } : {}),
+        };
       },
     };
   });
-  const guidelines = harness.flatMap((tool) => tool.promptGuidelines ?? []);
-  const instructions = [dependencies.runtime.guide.text, ...guidelines].join(
-    "\n\n",
-  );
+  const instructions = renderAgentInstructions("mcp", host.names);
   return {
     tools,
     instructions,

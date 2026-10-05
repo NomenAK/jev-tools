@@ -31,7 +31,7 @@ test("max_calls interrupts later requests while preserving obtained verdicts", a
         questions: 1,
         usage: { inputTokens: 10, costUsd: 0.01 },
         answers: {
-          q1: { type: "bool", p: 0.98 },
+          q1: { type: "bool", source: "fresh", p: 0.98 },
           q2: {
             type: "unjudged",
             reason: second && !second.ok ? second.error : "unexpected",
@@ -70,15 +70,19 @@ test("max_calls interrupts later requests while preserving obtained verdicts", a
     },
   );
   assert.equal(requests, 1);
-  assert.match(
-    result.content[0]?.text ?? "",
-    /uncalibrated {2}free1 "Is this a greeting\?" = yes \(0\.98\)/,
+  const report = result.details.result;
+  assert.equal(report.execution, "partial");
+  assert.equal(report.items[0]?.treatment, "judged");
+  assert.equal(report.items[0]?.source, "fresh");
+  assert.equal(report.items[1]?.treatment, "not_judged");
+  assert.equal(report.items[1]?.source, "none");
+  assert.ok(
+    report.diagnostics.some((diagnostic) => diagnostic.cause === "call_budget"),
   );
-  assert.match(result.content[0]?.text ?? "", /unchecked: free2/);
-  assert.match(
-    result.content[0]?.text ?? "",
-    /\[max_calls=1 reached; raise max_calls\]/,
-  );
+  assert.equal(report.accounting.httpAttempts, 1);
+  assert.equal(report.accounting.requestedResults.fresh, 1);
+  assert.equal(report.accounting.requestedResults.notJudged, 1);
+  assert.ok(report.actions.every((action) => action.repeatUnchanged === false));
   assert.equal(session.snapshot().costUsd, 0.01);
 });
 test("session refusal prevents network and guide accompanies refused output", async () => {
@@ -113,6 +117,6 @@ test("session refusal prevents network and guide accompanies refused output", as
     result.content[0]?.text ?? "",
     /JEV_TOOLS_MAX_CALLS=0 reached; session total: 0 Jev calls\. No Jev call was made; the human sets this limit/,
   );
-  assert.match(guide, /In your final answer/);
+  assert.ok(guide.length > 0);
   assert.equal("usage" in result, false);
 });

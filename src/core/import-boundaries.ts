@@ -58,9 +58,14 @@ export function checkImportBoundaries(
         detail: `cannot resolve ${edge.specifier} inside src/`,
       });
     } else if (
-      ["core", "presets", "texts", "constants.ts", "result.ts"].includes(
-        layer,
-      ) &&
+      [
+        "core",
+        "presets",
+        "texts",
+        "constants.ts",
+        "result.ts",
+        "result-types.ts",
+      ].includes(layer) &&
       !(layer === "core" && ["node:path", "path"].includes(edge.specifier)) &&
       !(
         layer === "core" &&

@@ -5,6 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
+import {
+  buildResultReport,
+  known,
+  uncollectedContext,
+  unknown,
+} from "../src/core/result-report.ts";
 import { Guide } from "../src/guide.ts";
 import { detectHost } from "../src/host.ts";
 import type { JevClient } from "../src/jev/types.ts";
@@ -18,6 +24,40 @@ const flagged: DocsCheckResult = {
   status: "completed",
   envelope: { lines: [] },
   judgments: [],
+  result: buildResultReport({
+    tool: "jev_check_diff",
+    context: uncollectedContext({
+      authority: unknown("synthetic hook fixture"),
+    }),
+    items: [
+      {
+        id: "docs:s1",
+        label: "`--legacy` keeps the old format.",
+        kind: "section",
+        groupId: "docs:s1",
+        evidence: [],
+        diagnosticIds: [],
+        actionIds: [],
+        treatment: "static",
+        source: "none",
+        staticReason: "Synthetic documentation hook finding fixture",
+      },
+    ],
+    diagnostics: [],
+    actions: [],
+    metrics: {
+      calls: 0,
+      questions: 0,
+      cacheHits: 0,
+      cacheRequests: 0,
+      elapsedMs: 0,
+    },
+    auxiliary: {
+      controls: { fresh: 0, cache: 0, notJudged: 0, static: 0 },
+      passages: { fresh: 0, cache: 0, notJudged: 0 },
+    },
+    total: known(1),
+  }),
   findings: [
     {
       section: { path: "docs/api.md", heading: "Options", start: 1, end: 3 },
@@ -40,8 +80,16 @@ const flagged: DocsCheckResult = {
     },
   ],
 };
-const message =
-  'jev_check_diff (docs) flagged documentation that may no longer match your changes:\n- docs/api.md § Options — "`--legacy` keeps the old format." no longer true after parseArgs in src/cli.ts\nUpdate them, or say why they are still correct.';
+function assertFlaggedContext(value: unknown): void {
+  assert.equal(typeof value, "string");
+  const text = value as string;
+  assert.ok(text.includes("docs/api.md"));
+  assert.ok(text.includes("Options"));
+  assert.ok(text.includes("`--legacy` keeps the old format."));
+  assert.ok(text.includes("parseArgs"));
+  assert.ok(text.includes("src/cli.ts"));
+  assert.equal(text.split("`--legacy` keeps the old format.").length - 1, 1);
+}
 
 function harness(
   isOmp = false,
@@ -126,18 +174,22 @@ test("each host checks once per prompt even when no section is flagged", async (
 
 test("omp relaunches once with designated sentences, reset only by a user prompt", async () => {
   const h = harness(true);
-  assert.deepEqual(await h.emit("session_stop"), {
-    continue: true,
-    additionalContext: message,
-  });
+  const first = (await h.emit("session_stop")) as {
+    continue: boolean;
+    additionalContext: string;
+  };
+  assert.equal(first.continue, true);
+  assertFlaggedContext(first.additionalContext);
   assert.equal(await h.emit("session_stop"), undefined);
   await h.emit("agent_start");
   assert.equal(await h.emit("session_stop"), undefined);
   await h.emit("before_agent_start");
-  assert.deepEqual(await h.emit("session_stop"), {
-    continue: true,
-    additionalContext: message,
-  });
+  const second = (await h.emit("session_stop")) as {
+    continue: boolean;
+    additionalContext: string;
+  };
+  assert.equal(second.continue, true);
+  assertFlaggedContext(second.additionalContext);
   assert.equal(h.checks(), 2);
   assert.deepEqual(h.commands[0], [
     "git",
@@ -158,24 +210,34 @@ test("pi preserves entries and relaunches once despite canContinue=false", async
     entries,
     context: { canContinue: false },
   };
-  const expected = {
-    continue: true,
-    entries: [
-      ...entries,
-      {
-        type: "custom_message",
-        customType: "jev-check-diff",
-        content: message,
-        display: false,
-      },
-    ],
+  const response = (await h.emit("agent_before_settle", event)) as {
+    continue: boolean;
+    entries: Array<{
+      type: string;
+      customType: string;
+      content?: string;
+      display?: boolean;
+      data?: number;
+    }>;
   };
-  assert.deepEqual(await h.emit("agent_before_settle", event), expected);
+  assert.equal(response.continue, true);
+  assert.deepEqual(response.entries.slice(0, -1), entries);
+  const added = response.entries.at(-1);
+  assert.equal(added?.type, "custom_message");
+  assert.equal(added?.customType, "jev-check-diff");
+  assert.equal(added?.display, false);
+  assertFlaggedContext(added?.content);
   assert.equal(await h.emit("agent_before_settle", event), undefined);
   await h.emit("agent_start");
   assert.equal(await h.emit("agent_before_settle", event), undefined);
   await h.emit("before_agent_start");
-  assert.deepEqual(await h.emit("agent_before_settle", event), expected);
+  const repeated = (await h.emit(
+    "agent_before_settle",
+    event,
+  )) as typeof response;
+  assert.equal(repeated.continue, true);
+  assert.deepEqual(repeated.entries.slice(0, -1), entries);
+  assertFlaggedContext(repeated.entries.at(-1)?.content);
 });
 test("host guards perform no git or docs work", async () => {
   const omp = harness(true);
@@ -233,10 +295,12 @@ test("only flagged verdicts with designated sentences enter the message", async 
     ],
   };
   const h = harness(true, {}, result);
-  assert.deepEqual(await h.emit("session_stop"), {
-    continue: true,
-    additionalContext: message,
-  });
+  const response = (await h.emit("session_stop")) as {
+    continue: boolean;
+    additionalContext: string;
+  };
+  assert.equal(response.continue, true);
+  assertFlaggedContext(response.additionalContext);
 });
 test("collection exhaustion without flags and cap refusal are silent", async () => {
   const empty = harness(
@@ -250,10 +314,12 @@ test("collection exhaustion without flags and cap refusal are silent", async () 
     {},
     { ...flagged, status: "collect_budget_reached" },
   );
-  assert.deepEqual(await partial.emit("session_stop"), {
-    continue: true,
-    additionalContext: message,
-  });
+  const response = (await partial.emit("session_stop")) as {
+    continue: boolean;
+    additionalContext: string;
+  };
+  assert.equal(response.continue, true);
+  assertFlaggedContext(response.additionalContext);
   const cap = harness(
     true,
     {},
@@ -318,12 +384,14 @@ test("real docs checking includes untracked code and shares session caps", async
         answers: {
           status: {
             type: "choice",
+            source: "fresh" as const,
             choice: "now_false",
             confidence: 1,
             probabilities: { now_false: 1 },
           },
           sentence: {
             type: "choice",
+            source: "fresh" as const,
             choice: "s1",
             confidence: 1,
             probabilities: { s1: 1 },
@@ -360,10 +428,10 @@ test("real docs checking includes untracked code and shares session caps", async
       "export function value() { return 2; }\n",
     );
     const hook = new RunEnd(h.deps, { env: {} });
-    assert.match(
-      (await hook.onRunEnd({ cwd })) ?? "",
-      /no longer true after value in new\.ts/,
-    );
+    const flaggedMessage = await hook.onRunEnd({ cwd });
+    assert.equal(typeof flaggedMessage, "string");
+    assert.ok(flaggedMessage?.includes("README.md"));
+    assert.ok(flaggedMessage?.includes("new.ts"));
     assert.equal(h.deps.runtime.session.snapshot().calls, 1);
     assert.equal(requests, 1);
     h.deps.runtime.session = new Session({ maxCalls: 0 });

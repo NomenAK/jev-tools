@@ -13,15 +13,15 @@ Install through your host's package manager, or register the MCP server with an 
 ### pi
 
 ```sh
-pi install npm:jev-agent-tools@0.2.0
+pi install npm:jev-agent-tools@0.3.0
 # Project-local installation:
-pi install -l npm:jev-agent-tools@0.2.0
+pi install -l npm:jev-agent-tools@0.3.0
 ```
 
 ### omp
 
 ```sh
-omp plugin install jev-agent-tools@0.2.0
+omp plugin install jev-agent-tools@0.3.0
 ```
 
 ### Any MCP client
@@ -45,7 +45,7 @@ Since version 0.2.0, the package also ships `jev-agent-tools-mcp`, a stdio MCP s
 
 On Windows most clients start commands without a shell, so use `"command": "cmd"` with `"/c", "npx"` at the start of `args`. The [MCP setup guide](docs/mcp.md) has per-client files, CLI commands, variable interpolation, verification and troubleshooting. Releases are also listed in the official MCP Registry as `io.github.NomenAK/jev-agent-tools`. Add the [agent instructions](docs/agent-instructions.md) to `CLAUDE.md`, `AGENTS.md` or a Kiro steering file so the agent uses and reads the tools correctly.
 
-The server reads the same environment variables as pi and omp and the configuration saved by `/jev-setup`. One server process is one session. The automatic run-end documentation check does not exist in MCP; call `jev_check_diff` with `check: "docs"` instead. `jev_ask` is marked as not read-only while commands are enabled; set `JEV_TOOLS_ALLOW_COMMAND=0` to remove `command` from its schema.
+The server reads the same environment variables as pi and omp and the configuration saved by `/jev-setup`. One server process is one session. MCP has no automatic run-end documentation hook; its absence does not require manual replacement calls. `jev_ask` is marked as not read-only while commands are enabled; set `JEV_TOOLS_ALLOW_COMMAND=0` to remove `command` from its schema.
 
 ### Requirements and compatibility
 
@@ -90,8 +90,8 @@ export JEV_TOOLS_MODEL="openjev"
 
 | Variable | Meaning |
 |---|---|
-| `JEV_TOOLS_URL` | Required complete endpoint URL compatible with the Jev API format. |
-| `JEV_TOOLS_API_KEY` | Required Bearer credential; configuration values are not printed in tool output. |
+| `JEV_TOOLS_URL` | Required complete endpoint URL compatible with the Jev API format. Must be `https:`; plain `http:` is accepted only for `127.0.0.1`, `::1` or `localhost`. |
+| `JEV_TOOLS_API_KEY` | Required Bearer credential; configuration values are not printed in tool output, and command children never receive it. |
 | `JEV_TOOLS_MODEL` | Requested model string, default `openjev`; a moving alias, not a guarantee of served-model identity. |
 | `JEV_TOOLS_MAX_CALLS` | Session-wide non-negative safe-integer call limit; absent or empty means unlimited. Invalid values refuse requests. |
 | `JEV_TOOLS_MAX_USD` | Session-wide finite non-negative cost limit, including fractions; absent or empty means unlimited. Invalid values refuse requests. |
@@ -115,29 +115,37 @@ Without the endpoint or key, tools remain registered and explain the missing con
 
 Use native read/search tools or code for exact source text, known symbols, filenames, line numbers, counts and arithmetic. Run commands yourself when you need their full output. Tool reference examples use fictional repository paths and are illustrative calls, not recorded executions.
 
+### Evidence root
+
+All six tools accept optional `root: string`. Without it, the host's current directory or configured MCP server directory retains its existing behavior. An override must name exactly the initial repository's Git top-level or a registered live worktree with the same canonical Git common directory. Relative overrides resolve against the initial directory; absolute paths are accepted only for this parameter. Subdirectories, other clones/repositories, parent traversal and symlink components are refused before evidence collection, command execution, cache access or judgment. There is no fallback to a different checkout.
+
+The admitted root governs files, base/diff, inventories, specification paths, runner plans and command cwd for that call only. It does not change another call or the automatic documentation hook. File arguments remain repository-relative and confined. A command still has ordinary shell permissions, not a sandbox. Check the reported authority, requested/effective root and resolved base before using a result.
+
 ## Read the results
 
-A line without a mark is a **verdict**: a lead to check before editing, deleting or reporting completion, not a proof. Probabilities concern the evidence shown, not everything in your repository.
+Each result begins with execution state: **complete**, **partial**, **not_judged** or **refused**. This describes processing, not correctness, safety or coverage. Items distinguish fresh or cached Jev judgments, static treatment and work never judged. Static selection and conservative fallback carry no invented probability. A judged line without an uncertainty mark is a **verdict**: a lead to check, not proof beyond the supplied evidence.
 
 | Mark | Meaning and next action |
 |---|---|
 | `unsure` | The answer is ambiguous or a control failed. Read the indicated passage or add the specific evidence that would settle it. Do not merely reword the question. |
-| `abstain` | A necessary piece is missing. Add the named file or command evidence and ask once. |
+| `abstain` | A necessary piece is missing. Obtain the named evidence or leave the conclusion open; another Jev call is optional when the changed evidence makes it useful. |
 | `no (not shown)` / `not addressed` | The supplied evidence does not show the statement; that does not make it false. |
 | `uncalibrated` | No established error-rate calibration applies to this ask; treat it as a hint even if its probability is high. |
-| Bracketed lines | Collection, parsing, budget or display limitations, with the next manual action. |
+| Diagnostics and next actions | Typed cause, origin, affected scope, materiality and recovery instructions; distinguish uncertain judgments from work never judged. |
 
 Ordinary boolean verdict bands are at or below 0.20 and at or above 0.80; category/level verdicts require a leading-option probability of at least 0.85 after applicable controls. Fixed checks and navigation tools have their own thresholds, described in their references and [design](docs/design.md).
 
-The footer reports **calls · questions · cost · cache · time**: request count, questions judged, reported USD cost, cache hits/requests and elapsed time. A tool invocation may require several requests for batching or controls. Missing cost reporting is not evidence of a free request.
+Accounting separates **HTTP attempts**, **questions sent**, **requested results** (fresh/cache/static/not judged), **cache probes**, auxiliary controls and passage selection, current reported USD cost and elapsed time. These counts are not interchangeable. A cached judgment can have zero HTTP attempts; zero attempts can also mean static work or no judgment. Unknown cost is unreported, not free. Context values distinguish known, unknown, not collected and not applicable.
 
-In a final report, explicitly identify conclusions marked `unsure` or `abstain` as unconfirmed by Jev. If subsequent reading settles them, distinguish that verification from the tool's result and cite the decisive evidence. Otherwise retain the uncertainty in your summary and recommendation.
+pi and omp expose the versioned report as `details.result`. MCP versions from 2025-06-18 expose the same report under `structuredContent.result` with an advertised output schema; older versions receive self-contained text from the same report. Text preserves material limitations, evidence provenance and useful read/runner commands.
+
+Report current conclusions, decisive evidence with origin and scope, and material reservations. If native reading or execution settles an earlier `unsure` or `abstain` on the same context, attribute the current conclusion to that native evidence, not Jev. If uncertainty returned by Jev remains material, explicitly say Jev did not confirm the conclusion and name the missing evidence and impact. Independent limits, stale evidence and conflicting contexts remain visible. Reported checks are not observed execution; no exhaustive history block or new persistent register is required.
 
 ## Usage guidance for pi and omp
 
 The extension supplies the shared reading guide in both hosts. omp discovers enabled npm plugin rules during normal startup; pi does not automatically discover the package's `rules/` directory. In pi, the same decision policy is part of the `jev_ask` tool guidelines, so it is present whenever `jev_ask` is active. A forced opaque prompt override may bypass this integration; disabled tools or disabled omp rules are not covered. This README block is recommended usage guidance, not itself an installed instruction:
 
-> Before concluding that a failure is a code bug, an incorrect test or an environment problem, or that a plan matches documentation, pass the relevant files to [jev_ask](docs/tools/jev_ask.md) and weigh its answer against your own reading. Include both the failing test and the code it exercises; identify any conclusion that remains unconfirmed.
+> Use Jev for a bounded semantic judgment when it can change an open decision or focus inspection. Use decisive native reading, search or authorized execution directly. A Jev call is not a prerequisite for a conclusion, review or completion. When choosing a call, supply both sides of a comparison and the evidence that distinguishes explanations. Revisit only when changed evidence, context or a useful new question warrants it; repeating unchanged evidence is not a recovery action.
 
 MCP clients receive the guide as server `instructions`, which some clients ignore. Add the [agent instructions](docs/agent-instructions.md) to the project's `CLAUDE.md`, `AGENTS.md` or Kiro steering file.
 
@@ -145,11 +153,11 @@ MCP clients receive the guide as server `instructions`, which some clients ignor
 
 Repository evidence, notes and optional command output are sent to your configured endpoint. Review its data-handling policy before using confidential repositories. See [security guidance](SECURITY.md).
 
-File collection is confined to the repository: absolute paths, parent traversal, escaping symlinks, Git metadata and internal URLs are not file inputs. Build output, binaries, lockfiles and oversized files are skipped or refused with visible limits; evidence is not silently truncated into a verdict. This confinement does **not** sandbox a command. `jev_ask` commands can read, write or access the network with the host's shell permissions. omp uses execution approval for commands; pi does not supply an additional per-tool command approval; MCP clients apply their own tool approval, and the server marks `jev_ask` as not read-only. Set `JEV_TOOLS_ALLOW_COMMAND=0` to disable them.
+File collection is confined to the repository: absolute paths, parent traversal, escaping symlinks, Git metadata and internal URLs are not file inputs. Files named like secrets (`.env`, `.env.*` except `.env.example`/`.env.sample`/`.env.template`, `*.pem`, `id_rsa*`, `*.p12`, `credentials*`, `secrets*`, any depth, any case) are refused before reading and named with cause `secret_pattern`. Build output, binaries, lockfiles and oversized files are skipped or refused with visible limits; evidence is not silently truncated into a verdict. This confinement does **not** sandbox a command. `jev_ask` commands can read, write or access the network with the host's shell permissions; they run without `JEV_TOOLS_API_KEY`, and the configured key is replaced with `[redacted]` in their output. omp uses execution approval for commands; pi does not supply an additional per-tool command approval; MCP clients apply their own tool approval, and the server marks `jev_ask` as not read-only. Set `JEV_TOOLS_ALLOW_COMMAND=0` to disable them.
 
 ## Automatic documentation check
 
-On a dirty tree, the extension can check existing Markdown documentation once at run end against changes from `HEAD`, including untracked files. A flagged existing sentence can request one additional turn to update it or explain why it remains correct. Merely unsure sections do not trigger another turn. Missing configuration, disabled automation, invalid/exhausted session budgets or a clean tree skip the check. Errors and timeout do not block the host. This is not a check for every missing documentation obligation. The MCP server has no run-end hook; there, call `jev_check_diff` with `check: "docs"` before finishing.
+On a dirty tree, the extension can check existing Markdown documentation once at run end against changes from `HEAD`, including admitted untracked files (not gitignored, not secret-named), which are sent to the endpoint without an explicit tool call. A flagged existing sentence can request one additional turn to inspect and update it or explain with evidence why it remains correct; a flag does not itself establish falsehood or require a second call. Merely unsure sections do not trigger another turn. `JEV_TOOLS_AUTO_DOCS=0`, missing configuration, invalid/exhausted session budgets or a clean tree skip the check. Errors and timeout do not block the host. This opt-out host feature does not certify documentation completeness. MCP has no hook and requires no manual replacement ritual.
 
 ## Known limits
 

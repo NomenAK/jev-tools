@@ -110,11 +110,32 @@ export const RUNNER_PACKAGE_MAX_BYTES = 64 * 1024;
 
 // ADR 0001: allowed local dependencies, including erased type imports.
 export const IMPORT_LAYERS = {
-  core: ["core", "constants.ts", "result.ts", "jev/types.ts"],
-  presets: ["presets", "core", "constants.ts", "result.ts", "jev/types.ts"],
-  adapters: ["adapters", "core", "constants.ts", "result.ts", "jev/types.ts"],
-  jev: ["jev", "core", "constants.ts", "result.ts"],
+  core: [
+    "core",
+    "constants.ts",
+    "result.ts",
+    "result-types.ts",
+    "jev/types.ts",
+  ],
+  presets: [
+    "presets",
+    "core",
+    "constants.ts",
+    "result.ts",
+    "result-types.ts",
+    "jev/types.ts",
+  ],
+  adapters: [
+    "adapters",
+    "core",
+    "constants.ts",
+    "result.ts",
+    "result-types.ts",
+    "jev/types.ts",
+  ],
+  jev: ["jev", "core", "constants.ts", "result.ts", "result-types.ts"],
   texts: ["texts", "constants.ts", "presets"],
   "constants.ts": [],
-  "result.ts": [],
+  "result.ts": ["result-types.ts"],
+  "result-types.ts": [],
 } as const;

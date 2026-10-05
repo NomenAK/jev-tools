@@ -24,6 +24,9 @@ export const INVALID_PARAMS = -32602;
 export const INTERNAL_ERROR = -32603;
 export const UNSUPPORTED_PROTOCOL_VERSION = -32022;
 
+/** Input-schema failure, distinct from semantic tool refusals and server faults. */
+export class McpInvalidParams extends Error {}
+
 export interface McpContent {
   type: "text";
   text: string;
@@ -31,12 +34,14 @@ export interface McpContent {
 export interface McpCallResult {
   content: McpContent[];
   isError?: boolean;
+  structuredContent?: Record<string, unknown>;
 }
 export interface McpTool {
   name: string;
   title?: string;
   description: string;
   inputSchema: { type: "object"; [key: string]: unknown };
+  outputSchema?: { type: "object"; [key: string]: unknown };
   annotations?: {
     title?: string;
     readOnlyHint?: boolean;
@@ -78,6 +83,7 @@ export class McpServer {
   private readonly tools: Map<string, McpTool>;
   private readonly info: McpServerInfo;
   private readonly inFlight = new Map<Id, AbortController>();
+  private negotiatedVersion: string = LATEST_INITIALIZE_VERSION;
 
   constructor(info: McpServerInfo, tools: readonly McpTool[]) {
     this.info = info;
@@ -134,41 +140,60 @@ export class McpServer {
           requested,
         },
       );
+    const version =
+      typeof requested === "string"
+        ? requested
+        : method === "server/discover"
+          ? "2026-07-28"
+          : this.negotiatedVersion;
     try {
       switch (method) {
-        case "initialize":
-          return this.result(id, this.initialize(params));
+        case "initialize": {
+          const initialized = this.initialize(params);
+          return this.result(id, initialized, this.negotiatedVersion);
+        }
         case "server/discover":
-          return this.result(id, {
-            supportedVersions: [...SUPPORTED_VERSIONS],
-            capabilities: { tools: { listChanged: false } },
-            _meta: {
-              "io.modelcontextprotocol/serverInfo": {
-                name: this.info.name,
-                version: this.info.version,
+          return this.result(
+            id,
+            {
+              supportedVersions: [...SUPPORTED_VERSIONS],
+              capabilities: { tools: { listChanged: false } },
+              _meta: {
+                "io.modelcontextprotocol/serverInfo": {
+                  name: this.info.name,
+                  version: this.info.version,
+                },
               },
+              ...(this.info.instructions
+                ? { instructions: this.info.instructions }
+                : {}),
+              ttlMs: 0,
+              cacheScope: "private",
             },
-            ...(this.info.instructions
-              ? { instructions: this.info.instructions }
-              : {}),
-            ttlMs: 0,
-            cacheScope: "private",
-          });
+            version,
+          );
         case "ping":
-          return this.result(id, {});
+          return this.result(id, {}, version);
         case "tools/list":
-          return this.result(id, {
-            tools: [...this.tools.values()].map(
-              ({ call: _call, ...tool }) => tool,
-            ),
-            // CacheableResult requires these from 2026-07-28; 0/private is
-            // conservative (immediately stale, same authorization context)
-            // and ignored by earlier clients via the open result shape.
-            ttlMs: 0,
-            cacheScope: "private",
-          });
+          return this.result(
+            id,
+            {
+              tools: [...this.tools.values()].map(
+                ({ call: _call, outputSchema, ...tool }) => ({
+                  ...tool,
+                  ...(supportsStructuredResults(version) && outputSchema
+                    ? { outputSchema }
+                    : {}),
+                }),
+              ),
+              ...(version === "2026-07-28"
+                ? { ttlMs: 0, cacheScope: "private" }
+                : {}),
+            },
+            version,
+          );
         case "tools/call":
-          return await this.callTool(id, params);
+          return await this.callTool(id, params, version);
         default:
           return this.error(
             id,
@@ -194,6 +219,7 @@ export class McpServer {
       (SUPPORTED_VERSIONS as readonly string[]).includes(requested)
         ? requested
         : LATEST_INITIALIZE_VERSION;
+    this.negotiatedVersion = protocolVersion;
     return {
       protocolVersion,
       capabilities: { tools: { listChanged: false } },
@@ -215,6 +241,7 @@ export class McpServer {
   private async callTool(
     id: Id,
     params: Record<string, unknown>,
+    version: string,
   ): Promise<JsonRpcResponse | undefined> {
     const tool =
       typeof params.name === "string" ? this.tools.get(params.name) : undefined;
@@ -240,30 +267,45 @@ export class McpServer {
     try {
       const result = await tool.call(params.arguments ?? {}, controller.signal);
       if (cancelled()) return undefined;
-      return this.result(id, { ...result });
+      const { structuredContent, ...content } = result;
+      return this.result(
+        id,
+        {
+          ...content,
+          ...(supportsStructuredResults(version) && structuredContent
+            ? { structuredContent }
+            : {}),
+        },
+        version,
+      );
     } catch (error) {
       if (cancelled()) return undefined;
-      // Tool execution failures are results the model can read, not protocol errors.
-      return this.result(id, {
-        content: [
-          {
-            type: "text",
-            text: `${tool.name} failed: ${error instanceof Error ? error.message : String(error)}`,
-          },
-        ],
-        isError: true,
-      });
+      if (error instanceof McpInvalidParams)
+        return this.error(id, INVALID_PARAMS, error.message);
+      // Expected tool refusals already carry a report. An unexpected server
+      // fault has no trustworthy report/accounting; do not fabricate one.
+      return this.error(
+        id,
+        INTERNAL_ERROR,
+        `${tool.name} failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
     } finally {
       this.inFlight.delete(id);
     }
   }
 
-  private result(id: Id, result: Record<string, unknown>): JsonRpcResponse {
-    // resultType is required from 2026-07-28 and ignored by earlier clients.
+  private result(
+    id: Id,
+    result: Record<string, unknown>,
+    version: string,
+  ): JsonRpcResponse {
     return {
       jsonrpc: "2.0",
       id,
-      result: { resultType: "complete", ...result },
+      result: {
+        ...(version === "2026-07-28" ? { resultType: "complete" } : {}),
+        ...result,
+      },
     };
   }
 
@@ -279,4 +321,12 @@ export class McpServer {
       error: { code, message, ...(data === undefined ? {} : { data }) },
     };
   }
+}
+
+function supportsStructuredResults(version: string): boolean {
+  return (
+    version === "2025-06-18" ||
+    version === "2025-11-25" ||
+    version === "2026-07-28"
+  );
 }

@@ -32,12 +32,47 @@ export interface CommandOutput {
   compressed: boolean;
   truncated: boolean;
 }
+const TRUNCATION_MARK = `…[line truncated at ${OUTPUT_LINE_MAX_CHARS} chars]`;
+/** Shortest key prefix worth redacting when a line cut leaves only its start. */
+const SECRET_PREFIX_MIN = 4;
+/**
+ * Replace every occurrence of `secret` in `text`, counting replacements. A
+ * line cut at OUTPUT_LINE_MAX_CHARS can end inside the key; that trailing key
+ * prefix is redacted too.
+ */
+export function redactSecret(
+  text: string,
+  secret: string | undefined,
+): { text: string; count: number } {
+  if (!secret) return { text, count: 0 };
+  const parts = text.split(secret);
+  let result = parts.join("[redacted]");
+  let count = parts.length - 1;
+  if (result.endsWith(TRUNCATION_MARK)) {
+    const kept = result.slice(0, -TRUNCATION_MARK.length);
+    const min = Math.min(SECRET_PREFIX_MIN, secret.length);
+    for (
+      let length = Math.min(secret.length - 1, kept.length);
+      length >= min;
+      length--
+    ) {
+      if (kept.endsWith(secret.slice(0, length))) {
+        result = `${kept.slice(0, -length)}[redacted]${TRUNCATION_MARK}`;
+        count++;
+        break;
+      }
+    }
+  }
+  return { text: result, count };
+}
 export async function captureCommand(
   exec: GitExec,
   cwd: string,
   command: string,
   timeoutS = ASK_TIMEOUT_S,
   signal?: AbortSignal,
+  /** Configured Jev API key, replaced in the captured command and output. */
+  secret?: string,
 ): Promise<
   Result<{
     output: CommandOutput;
@@ -48,9 +83,19 @@ export async function captureCommand(
     selectedPassages: boolean;
     assertion: boolean;
     targets: FailureTarget[];
-  }>
+    /** Occurrences of `secret` replaced with `[redacted]`. */
+    redactions: number;
+  }> & {
+    commandExecution: "not_started" | "unknown" | "finished";
+    commandExitCode?: number | null;
+    commandTimedOut?: boolean;
+  }
 > {
   const directory = await mkdtemp(join(tmpdir(), "jev-output-"));
+  let commandExecution: "not_started" | "unknown" | "finished" = "not_started";
+  let completion:
+    | { commandExitCode: number | null; commandTimedOut: boolean }
+    | undefined;
   try {
     await chmod(directory, 0o700);
     const stdoutPath = join(directory, "stdout");
@@ -65,7 +110,14 @@ export async function captureCommand(
     try {
       const shell = resolveShell();
       // Fail closed: never spawn a bare name that PATH could resolve to WSL.
-      if (!shell.ok) throw new Error(shell.error);
+      if (!shell.ok)
+        return {
+          ok: false,
+          cause: "file_unavailable",
+          commandExecution: "not_started",
+          error: shell.error,
+        };
+      commandExecution = "unknown";
       executed = await exec(
         shell.executable,
         [
@@ -78,26 +130,18 @@ export async function captureCommand(
         ],
         { cwd, timeout: timeoutS * 1000, signal },
       );
+      commandExecution = "finished";
+      completion = {
+        commandExitCode: executed.killed ? null : executed.code,
+        commandTimedOut: executed.killed,
+      };
     } catch (error) {
       signal?.throwIfAborted();
       return {
-        ok: true,
-        output: {
-          command,
-          exit_code: null,
-          timed_out: false,
-          stdout: "",
-          stderr: `Command executable unavailable: ${String(error)}`,
-          compressed: true,
-          truncated: false,
-        },
-        originalBytes: 0,
-        compressedChars: 0,
-        lineOmittedChars: 0,
-        shapeLimitExceeded: false,
-        selectedPassages: false,
-        assertion: false,
-        targets: [],
+        ok: false,
+        cause: "file_unavailable",
+        commandExecution,
+        error: `Command executable unavailable: ${String(error)}`,
       };
     }
     signal?.throwIfAborted();
@@ -119,6 +163,9 @@ export async function captureCommand(
     if (sizes.some((size) => size > OUTPUT_FILE_MAX_BYTES))
       return {
         ok: false,
+        cause: "evidence_too_large",
+        commandExecution: "finished",
+        ...completion,
         error: `output exceeded ${OUTPUT_FILE_MAX_BYTES} bytes per stream; narrow command`,
       };
     const targets: FailureTarget[] = [];
@@ -128,19 +175,23 @@ export async function captureCommand(
     let lineOmittedChars = 0;
     let shapeLimitExceeded = false;
     const texts: string[] = [];
+    let redactions = 0;
+    const redacted = (text: string): string => {
+      const result = redactSecret(text, secret);
+      redactions += result.count;
+      return result.text;
+    };
     for (const [index, path] of [stdoutPath, stderrPath].entries()) {
       if (!sizes[index]) {
-        texts.push(index === 0 ? executed.stdout : executed.stderr);
+        texts.push(redacted(index === 0 ? executed.stdout : executed.stderr));
         continue;
       }
       const frequencies = new Map<string, number>();
       let shapeLimit = false;
       for await (const raw of outputLines(path, signal)) {
         signal?.throwIfAborted();
-        const line = cleanOutput(raw);
-        linesTruncated ||= raw.endsWith(
-          `…[line truncated at ${OUTPUT_LINE_MAX_CHARS} chars]`,
-        );
+        const line = redactSecret(cleanOutput(raw), secret).text;
+        linesTruncated ||= raw.endsWith(TRUNCATION_MARK);
         const shape = lineShape(line);
         if (
           !frequencies.has(shape) &&
@@ -187,17 +238,17 @@ export async function captureCommand(
         lineOmittedChars += chars;
       })) {
         signal?.throwIfAborted();
-        linesTruncated ||= raw.endsWith(
-          `…[line truncated at ${OUTPUT_LINE_MAX_CHARS} chars]`,
-        );
-        compressor.line(cleanOutput(raw));
+        linesTruncated ||= raw.endsWith(TRUNCATION_MARK);
+        // Redact before compression, failure windows and state assembly.
+        const line = redacted(cleanOutput(raw));
+        compressor.line(line);
         if (!failureSeen) {
-          failureWindow.push(cleanOutput(raw));
+          failureWindow.push(line);
           if (failureWindow.length > OUTPUT_FAILURE_WINDOW_LINES + 1)
             failureWindow.shift();
           if (isAnchor(raw)) failureSeen = true;
         } else if (afterFailure++ < OUTPUT_FAILURE_WINDOW_LINES) {
-          failureWindow.push(cleanOutput(raw));
+          failureWindow.push(line);
           if (!secondSeen && afterFailure > 1 && isFailingTestsHeader(raw)) {
             secondSeen = true;
             afterSecond = 0;
@@ -206,10 +257,10 @@ export async function captureCommand(
           if (isFailingTestsHeader(raw)) {
             secondSeen = true;
             afterSecond = 0;
-            failureWindow.push(cleanOutput(raw));
+            failureWindow.push(line);
           }
         } else if (afterSecond++ < OUTPUT_FAILURE_WINDOW_LINES) {
-          failureWindow.push(cleanOutput(raw));
+          failureWindow.push(line);
         }
       }
       compressor.finish();
@@ -220,8 +271,10 @@ export async function captureCommand(
     }
     return {
       ok: true,
+      commandExecution: "finished",
+      ...completion,
       output: {
-        command,
+        command: redacted(command),
         exit_code: executed.killed ? null : executed.code,
         timed_out: executed.killed,
         stdout: texts[0] ?? "",
@@ -236,6 +289,16 @@ export async function captureCommand(
       selectedPassages: false,
       assertion: signature === "assertion",
       targets,
+      redactions,
+    };
+  } catch (error) {
+    signal?.throwIfAborted();
+    return {
+      ok: false,
+      cause: "file_unavailable",
+      commandExecution,
+      ...completion,
+      error: `Command capture unavailable: ${String(error)}`,
     };
   } finally {
     await rm(directory, { recursive: true, force: true });

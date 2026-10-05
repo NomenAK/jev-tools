@@ -18,10 +18,13 @@ npm run typecheck
 npm run build
 npm run check:imports
 npm run lint
+node scripts/generate-instructions.ts --check
 npm test
 ```
 
 `npm run build` compiles only the MCP server into `dist/` (git-ignored); `npm pack` runs it automatically. To try the server against a checkout, see [From a clone](docs/mcp.md#from-a-clone). CI packs the package and runs `node scripts/check-mcp-package.ts <tarball>`: it installs the tarball into an empty directory, checks modern discovery and all advertised legacy handshakes, lists the six tools with their schemas and caching fields, and runs `jev_ask` through a local synthetic HTTP endpoint. This verifies installed integration, not live model accuracy. Linux runs the full offline suite; native Windows and macOS jobs run targeted MCP, process, configuration and packaging checks.
+
+Agent policy and result-reading guidance are versioned in `src/texts/instructions.ts`. After changing them, run `node scripts/generate-instructions.ts` to update the checked-in omp rule and MCP project block; `--check` verifies that those copies remain synchronized. Keep host differences explicit rather than maintaining independent policy text.
 
 ## Releases
 

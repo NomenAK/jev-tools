@@ -6,9 +6,17 @@ The tools construct bounded evidence before asking for judgment. They preserve u
 
 Supply the discriminating evidence, not an argument about it. For comparisons, show both sides: a failing test and its implementation, or a file before and after. A bounded static import closure adds declarations before judgment where supported; it cannot establish completeness or discover relationships without imports. Commands are evidence sources, not a sandbox or a substitute for reading the output directly.
 
+Every call captures its host/server authority independently. Optional `root` admits only an exact repository top-level or live registered worktree with the same Git common directory, before content, commands, cache or HTTP. No override preserves existing cwd behavior; an invalid override never falls back. The effective context, requested/resolved base and inventory limits travel with evidence and results. See [root admission](../README.md#evidence-root).
+
+Explicit selectors define required evidence; lexical hints do not become vetoes merely because they resemble filenames. Exact directory paths cannot fall back to suffix matches. Canonical paths serialize each current/base version once, with aliases as metadata, and file admission counts identities rather than versions. Missing requirements gate their full question/control group; global-note requirements remain global. Captured output and repository files keep separate provenance.
+
+Historical-only files pass the same protected-path, ignore, regular-file and text admission checks before their base content is disclosed. Current and base versions share the distinct-file ceiling; unresolved or over-budget selectors are not retried through raw historical reads.
+
 ## Pure core, thin adapters
 
 Pure core transformations construct states, units, questions and display envelopes. Adapters own filesystem, Git, parsing and host effects; the HTTP client owns transport. Presets define fixed review questions and texts define host-facing guidance. Hosts sit on top: `src/index.ts` registers the tools with pi and omp, and `src/mcp/` serves the same tool factories to any MCP client over stdio ([ADR 0010](adr/0010-mcp-server-thin-host.md), [setup](mcp.md)). Dependency checks keep shared contracts below consumers, reject cycles and account for erased type imports. Pure path operations and erased parser types are explicit architectural exceptions. Both hosts use the same HTTP judgment protocol.
+
+The dependency-free `src/result-types.ts` defines `ResultReportV1`; `core/result-report.ts` builds reports and validates semantic invariants, while `report-schema.ts` supplies the closed transport schema and structural validator. Producers record actual observations rather than reconstructing them from rendered prose. `renderResultReport` projects the same report to self-contained text, retaining native read/runner details. pi/omp publish `details.result`; supported MCP versions publish `structuredContent.result` without introducing a second judgment policy.
 
 ## Typed intents and fixed checks
 
@@ -18,11 +26,15 @@ Caller intents compile to typed questions with canonical options and exact state
 
 Leading-option probability (p_max) is the probability of the most likely choice, not the response's separate confidence field. Gray bands and applicable option-order checks expose ambiguity. Missing evidence remains abstention. Preset witnesses use a decoy and a known positive reference to detect a biased setup; failed controls do not promote findings. No mark establishes that unseen evidence is complete. See [result reading](../README.md#read-the-results).
 
+Execution state and judgment band are independent: complete/partial/refused/not judged describe processing, while verdict/unsure/abstain describe admitted judgments. Every requested item is fresh, cache, static or unjudged; static/fallback decisions have no invented probability. Auxiliary controls and passage decisions do not inflate requested-result counts. Missing required controls leave the requested group unjudged. Accounting distinguishes HTTP attempts, questions sent, cache probes, current cost and elapsed time; unknown cost is never reconstructed as zero or historical cached cost. Scoped diagnostics preserve material omissions and useful conditional actions.
+
 ## Bounded work, visible limits
 
 Admission limits, request planning, rate limiting and retry bounds are distinct. Oversized evidence is refused or visibly omitted, never silently converted into an ordinary verdict. Per-invocation max_calls and session call/cost limits are separate; control and severity requests count too. Under a session USD limit, requests are admitted one at a time so each admission sees all cost reported so far. Unjudged tests stay selected. Automatic documentation review is the only run-end automation and can request at most one extra turn.
 
-Successful non-command judgments are cached only in session memory by canonical evidence, question and requested model string. Errors are not cached; command judgments bypass caching. The default openjev alias can move, and an echoed model name does not prove served-model identity. Fractional budgets bound admission, not an exact prediction of the final request's cost.
+Successful non-command judgments are cached only in session memory by canonical evidence, question and requested model string. Every judgment input, including control and passage decisions, carries admitted authority/root provenance and the resolved base when applicable; that metadata participates in both cache identity and serialized evidence admission. Identical content from different roots or base revisions cannot reuse a judgment. Errors are not cached; command judgments bypass caching. The default openjev alias can move, and an echoed model name does not prove served-model identity. Fractional budgets bound admission, not an exact prediction of the final request's cost.
+
+`src/texts/instructions.ts` is the versioned source for host policy, evidence guidance and current-state presentation. `node scripts/generate-instructions.ts` updates checked-in omp/MCP fragments; `--check` detects drift. Jev is discretionary when it can inform an open decision; native decisive evidence requires no certification call. Unchanged retries and mandatory risk/docs sequences are not recovery policy. pi/omp retain the opt-out documentation hook; MCP has no replacement obligation. Final presentation distinguishes native execution, Jev's static judgment and reported evidence, preserving independent material reservations without requiring an exhaustive history registry.
 
 ## Policy thresholds
 

@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import type { Stats } from "node:fs";
 import { join } from "node:path";
 import { PRIVATE_STORAGE_TIMEOUT_MS } from "../constants.ts";
+import { withoutApiKey } from "./shell.ts";
 
 /**
  * Owner-only storage, checked with each operating system's own model.
@@ -77,6 +78,21 @@ foreach ($id in @($me.Value, '${SYSTEM}', '${ADMINISTRATORS}')) {
 }
 Set-Acl -LiteralPath $path -AclObject $acl`;
 
+/**
+ * Host environment for the ACL helper, without the Jev API key. PowerShell 7
+ * parents export PSModulePath, which stops Windows PowerShell 5.1 from loading
+ * its own Get-Acl module; 5.1 rebuilds it when unset.
+ */
+export function powershellEnv(
+  host: NodeJS.ProcessEnv,
+  env: Record<string, string>,
+): NodeJS.ProcessEnv {
+  const childEnv = withoutApiKey({ ...host, ...env });
+  for (const key of Object.keys(childEnv))
+    if (key.toLowerCase() === "psmodulepath") delete childEnv[key];
+  return childEnv;
+}
+
 function powershell(
   script: string,
   env: Record<string, string>,
@@ -90,11 +106,7 @@ function powershell(
     "v1.0",
     "powershell.exe",
   );
-  // PowerShell 7 parents export PSModulePath, which stops Windows PowerShell
-  // 5.1 from loading its own Get-Acl module; 5.1 rebuilds it when unset.
-  const childEnv: NodeJS.ProcessEnv = { ...process.env, ...env };
-  for (const key of Object.keys(childEnv))
-    if (key.toLowerCase() === "psmodulepath") delete childEnv[key];
+  const childEnv = powershellEnv(process.env, env);
   const { promise, resolve, reject } = Promise.withResolvers<string>();
   execFile(
     executable,

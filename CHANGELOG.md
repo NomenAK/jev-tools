@@ -9,6 +9,41 @@ modules are not a stable library API.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-05
+
+### Breaking
+
+- `JEV_TOOLS_URL` (and saved or flag URLs) with plain `http:` is refused unless the host is `127.0.0.1`, `::1` or `localhost`; use `https:`. The configuration error shows neither the URL nor the key and occurs before any request.
+- Files whose base name matches `.env`, `.env.*`, `*.pem`, `id_rsa*`, `*.p12`, `credentials*` or `secrets*` (any depth, case-insensitive; `.env.example`, `.env.sample` and `.env.template` excepted) are refused before reading on every evidence path, including diff units, test inventory, find, locate, ask-files and the pi/omp documentation hook. Each refusal is a named exclusion with the new cause `secret_pattern`; a question that explicitly requires such a file stays unjudged. There is no override.
+
+### Security
+
+- `jev_ask` commands and the Windows PowerShell ACL helper no longer inherit `JEV_TOOLS_API_KEY`. The configured key value (environment or saved configuration) is replaced with `[redacted]` in command output before state assembly, including a key prefix left where a long output line is cut, and the number of replacements is reported as a limitation.
+
+### Added
+
+- Optional `root` on all six tools, limited to the initial repository's exact Git root or registered live worktrees with the same common directory; invalid overrides refuse before evidence, commands, cache or judgments.
+- Versioned typed reports for every tool outcome, including refused and unjudged work: evidence context, item provenance, scoped diagnostics/actions and separate requested-result, HTTP, cache, control, passage and cost accounting.
+- MCP output schema and structured results from protocol 2025-06-18 onward, with self-contained text for older clients and per-request version isolation.
+
+### Changed
+
+- Explicit evidence selectors, rather than ordinary lexical mentions, govern missing-evidence exclusions. Canonical file versions are serialized once with alias metadata; before/current evidence remains distinct and missing requirements affect their own question group unless global.
+- Host guidance now makes Jev discretionary, shares versioned canonical fragments across pi/omp/MCP, and reports current conclusions with evidence provenance and material reservations. The pi/omp opt-out documentation hook remains; MCP requires no manual replacement call.
+- Human output is a projection of the typed report. Static/fallback selection and unavailable judgments never acquire fabricated probabilities; cached results are distinct from fresh requests and unknown cost is not zero.
+
+### Fixed
+
+- Historical-only and deleted-file evidence resolution, supplied-file basename precedence and canonical file-count admission without duplicated alias content.
+- Command output reaches bounded passage selection before immutable-evidence budget refusal, including base snapshots and import closure; reports preserve actual command execution/cwd even when later collection fails.
+- Selection reports distinguish unmatched candidate criteria, partial matches, excluded inventory and named conservative-widening triggers from absence of affected tests.
+- Review reports retain documentation completeness/collection reservations and risk/coverage witness diagnostics. Residual absence summaries remain derived observations within the considered inventory, not extra judgments or global coverage claims.
+- Recovery actions preserve the actual evidence/control limitation instructions rather than generic repetition advice.
+- Local-caller reports preserve their independent unsure/abstain bands and matching probabilities; specification drift remains one pointer decision rather than duplicated judgments for every candidate unit.
+- MCP malformed tool arguments remain JSON-RPC invalid-parameter errors, separate from well-formed calls refused by evidence admission.
+- Every judgment stage binds cache identity and serialized admission to its admitted root/base context, including auxiliary command passages. Locate planning reserves that metadata capacity before allocating evidence.
+- Historical selectors use protected base reads for ignored paths, symlinks, non-text content and deleted files; current/base versions share the distinct-file ceiling without bypassing rejected admissions.
+
 ## [0.2.0] - 2026-10-03
 
 ### Added
@@ -142,7 +177,8 @@ Tagged but never published to npm: the unscoped package name was rejected.
 
 Tagged but never published to npm: the publish workflow failed before upload.
 
-[Unreleased]: https://github.com/NomenAK/jev-tools/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/NomenAK/jev-tools/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/NomenAK/jev-tools/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/NomenAK/jev-tools/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/NomenAK/jev-tools/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/NomenAK/jev-tools/compare/v0.1.0...v0.1.3

@@ -161,7 +161,9 @@ for (const scenario of nominalCases) {
     assert.equal(judgment.ok, true);
     if (!judgment.ok) return;
     assert.equal(judgment.model, model);
-    assert.deepEqual(judgment.answers, { q1: scenario.normalized });
+    assert.deepEqual(judgment.answers, {
+      q1: { ...scenario.normalized, source: "fresh" },
+    });
     assert.deepEqual(judgment.usage, normalizedUsage);
     assert.equal(requests.length, 1);
     const request = requests[0];
@@ -230,7 +232,11 @@ for (const scenario of invalidCases) {
     assert.equal(judgment.ok, true);
     assert.equal(judgment.model, model);
     assert.deepEqual(judgment.usage, normalizedUsage);
-    assert.deepEqual(judgment.answers.valid, { type: "bool", p: 0.96 });
+    assert.deepEqual(judgment.answers.valid, {
+      type: "bool",
+      p: 0.96,
+      source: "fresh",
+    });
     assert.deepEqual(Object.keys(judgment.answers).sort(), [
       "invalid",
       "valid",
@@ -246,7 +252,9 @@ test("absent usage preserves normalized answers and the served model", async () 
     { model, answers: { q1: { noul: 0.96 } } },
   );
   assert.equal(judgment.ok, true);
-  assert.deepEqual(judgment.answers, { q1: { type: "bool", p: 0.96 } });
+  assert.deepEqual(judgment.answers, {
+    q1: { type: "bool", p: 0.96, source: "fresh" },
+  });
   assert.equal(judgment.model, model);
   assert.equal(judgment.usage, undefined);
 });
@@ -273,7 +281,11 @@ test("nominal request crosses a real HTTP endpoint", async () => {
     });
     assert.equal(result.ok, true);
     if (result.ok)
-      assert.deepEqual(result.answers.q1, { type: "bool", p: 0.96 });
+      assert.deepEqual(result.answers.q1, {
+        type: "bool",
+        p: 0.96,
+        source: "fresh",
+      });
     assert.deepEqual(JSON.parse(captured).state, state);
   } finally {
     const closed = Promise.withResolvers<void>();

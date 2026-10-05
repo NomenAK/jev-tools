@@ -193,10 +193,11 @@ test("missing coherence controls cannot produce a verdict", () => {
     intent: "decide",
     hypotheses: { bug: "Implementation fails" },
   });
-  assert.equal(
-    readAsks(result, {
-      q1: c({ bug: 0.98, other: 0.01, cannot_tell: 0.01 }),
-    })[0]?.band,
-    "unsure",
-  );
+  const reading = readAsks(result, {
+    q1: c({ bug: 0.98, other: 0.01, cannot_tell: 0.01 }),
+  })[0];
+  assert.equal(reading?.unjudged, true);
+  assert.equal(reading?.band, undefined);
+  assert.equal(reading?.answer, undefined);
+  assert.ok(reading?.reason?.includes("unjudged"));
 });

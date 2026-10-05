@@ -18,6 +18,7 @@ import {
   UNSUPPORTED_PROTOCOL_VERSION,
 } from "../src/mcp/protocol.ts";
 import { createMcpTools, loadMcpClient } from "../src/mcp/tools.ts";
+import { isMcpStructuredResult } from "../src/report-schema.ts";
 
 const toolNames = [
   "jev_ask",
@@ -44,7 +45,10 @@ const yesClient: JevClient = {
       calls: 1,
       questions: Object.keys(questions).length,
       answers: Object.fromEntries(
-        Object.keys(questions).map((id) => [id, { type: "bool", p: 0.97 }]),
+        Object.keys(questions).map((id) => [
+          id,
+          { type: "bool", p: 0.97, source: "fresh" },
+        ]),
       ),
     };
   },
@@ -86,7 +90,6 @@ test("initialize echoes a supported version and falls back to the latest", async
   assert.deepEqual(chosen.result.capabilities, {
     tools: { listChanged: false },
   });
-  assert.match(String(chosen.result.instructions), /jev_\* tools/);
   const fallback = await mcp.handle(
     request(2, "initialize", { protocolVersion: "1999-01-01" }),
   );
@@ -152,8 +155,9 @@ test("tools/list advertises conservative caching", async () => {
   assert.equal(tools.length, 6);
   const legacy = await mcp.handle(request(2, "tools/list"));
   assert.ok(legacy && "result" in legacy);
-  assert.equal(legacy.result.ttlMs, 0);
-  assert.equal(legacy.result.cacheScope, "private");
+  assert.equal(legacy.result.ttlMs, undefined);
+  assert.equal(legacy.result.cacheScope, undefined);
+  assert.equal(legacy.result.resultType, undefined);
 });
 
 test("server/discover carries server identity in result _meta", async () => {
@@ -307,9 +311,14 @@ test("JEV_TOOLS_ALLOW_COMMAND=0 removes command from the MCP schema", async () =
       listed.result.tools as {
         name: string;
         annotations: { readOnlyHint: boolean };
+        inputSchema: { properties: Record<string, unknown> };
       }[]
     )[0];
-    assert.doesNotMatch(JSON.stringify(askTool), /"command"/);
+    assert.ok(askTool);
+    assert.equal(
+      Object.hasOwn(askTool.inputSchema.properties, "command"),
+      false,
+    );
     assert.equal(askTool?.annotations.readOnlyHint, true);
   } finally {
     if (previous === undefined) delete process.env.JEV_TOOLS_ALLOW_COMMAND;
@@ -323,8 +332,18 @@ test("tools/call runs the shared tool and returns its rendered result", async ()
   );
   assert.ok(called && "result" in called);
   assert.equal(called.result.isError, undefined);
-  const text = (called.result.content as { text: string }[])[0]?.text ?? "";
-  assert.match(text, /Is this note a greeting\?" = yes \(0\.97\)/);
+  assert.ok(isMcpStructuredResult(called.result.structuredContent));
+  const report = called.result.structuredContent.result;
+  assert.equal(report.execution, "complete");
+  assert.ok(
+    report.items.some(
+      (item) =>
+        item.treatment === "judged" &&
+        item.source === "fresh" &&
+        item.judgment.measure.value.status === "known" &&
+        item.judgment.measure.value.value === 0.97,
+    ),
+  );
 });
 
 test("unconfigured server explains the missing configuration", async () => {
@@ -332,26 +351,35 @@ test("unconfigured server explains the missing configuration", async () => {
     request(1, "tools/call", { name: "jev_ask", arguments: ask }),
   );
   assert.ok(called && "result" in called);
-  assert.match(
-    (called.result.content as { text: string }[])[0]?.text ?? "",
-    /JEV_TOOLS_URL/,
-  );
+  assert.equal(called.result.isError, true);
+  assert.ok(isMcpStructuredResult(called.result.structuredContent));
+  const report = called.result.structuredContent.result;
+  assert.equal(report.execution, "not_judged");
+  assert.ok(report.diagnostics.some((item) => item.cause === "not_configured"));
 });
 
-test("schema violations are tool errors; unknown tools and methods are protocol errors", async () => {
-  const mcp = await server(yesClient);
-  const invalid = await mcp.handle(
-    request(1, "tools/call", {
-      name: "jev_ask",
-      arguments: { ...ask, unexpected: true },
-    }),
-  );
-  assert.ok(invalid && "result" in invalid);
-  assert.equal(invalid.result.isError, true);
-  assert.match(
-    (invalid.result.content as { text: string }[])[0]?.text ?? "",
-    /Invalid arguments/,
-  );
+test("schema violations, unknown tools and methods remain protocol errors", async () => {
+  let judgments = 0;
+  const mcp = await server({
+    clearCache() {},
+    async judge() {
+      judgments++;
+      throw new Error("Malformed arguments must not reach judgment");
+    },
+  });
+  for (const args of [
+    { ...ask, unexpected: true },
+    { ...ask, root: 7 },
+    { state: "missing asks" },
+  ]) {
+    const invalid = await mcp.handle(
+      request(1, "tools/call", { name: "jev_ask", arguments: args }),
+    );
+    assert.ok(invalid && "error" in invalid);
+    assert.equal(invalid.error.code, INVALID_PARAMS);
+    assert.equal("result" in invalid, false);
+  }
+  assert.equal(judgments, 0);
   const unknown = await mcp.handle(
     request(2, "tools/call", { name: "nope", arguments: {} }),
   );
@@ -467,7 +495,7 @@ test("MCP uses configuration saved by /jev-setup and survives unusable storage",
     join(directory, "absent"),
   );
   assert.equal(invalid.client, undefined);
-  assert.match(invalid.warning ?? "", /full HTTP\(S\) URL/);
+  assert.match(invalid.warning ?? "", /full https: URL/);
 });
 
 // End to end: a real stdio server process talking to a local fake Jev endpoint.
@@ -617,12 +645,21 @@ test("stdio server answers a real jev_ask over a repository file", async (t) => 
       },
     },
   });
-  const result = answered.result as {
-    content: { text: string }[];
-    isError?: boolean;
-  };
-  assert.equal(result.isError, undefined);
-  assert.match(result.content[0]?.text ?? "", /= yes \(0\.96\)/);
+  const result = answered.result;
+  assert.ok(
+    result && typeof result === "object" && "structuredContent" in result,
+  );
+  assert.equal("isError" in result ? result.isError : undefined, undefined);
+  assert.ok(isMcpStructuredResult(result.structuredContent));
+  assert.ok(
+    result.structuredContent.result.items.some(
+      (item) =>
+        item.treatment === "judged" &&
+        item.source === "fresh" &&
+        item.judgment.measure.value.status === "known" &&
+        item.judgment.measure.value.value === 0.96,
+    ),
+  );
   assert.ok(jev.seen.length >= 1);
   const first = jev.seen[0] as {
     authorization: string;

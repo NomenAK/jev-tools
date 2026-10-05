@@ -5,7 +5,7 @@ import { truncate } from "./truncate.ts";
 export interface SourceFile extends DiffFile {
   before: string | null;
   after: string | null;
-  limitation?: "too_large" | "unreadable" | "not UTF-8 text";
+  limitation?: "too_large" | "unreadable" | "not UTF-8 text" | "secret_pattern";
 }
 export interface Declaration {
   kind: "function" | "declaration";
@@ -43,6 +43,7 @@ export type UnitLimit =
         | "too_large"
         | "unreadable"
         | "not UTF-8 text"
+        | "secret_pattern"
         | "rename_unpaired";
       file: string;
     }
@@ -148,7 +149,7 @@ export function buildUnits(
   const units: EvidenceUnit[] = [];
   const limits: UnitLimit[] = [];
   for (const file of files) {
-    if (isTestFile(file.path)) continue;
+    if (isTestFile(file.path) && file.limitation !== "secret_pattern") continue;
     if (file.binary) {
       limits.push({ kind: "binary_ignored", file: file.path });
       continue;
