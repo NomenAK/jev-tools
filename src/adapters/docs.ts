@@ -199,12 +199,20 @@ export function docsDeclarationSearch(
     const paths = await admittedPaths;
     if (!paths.length) return new Map();
     const patterns = ["-e", docsDeclarationPattern(names)];
-    const result = await exec("rg", ["--json", ...patterns, "--", ...paths], {
-      cwd: inventory.cwd,
-      timeout: TIMEOUT_MS,
-      signal,
-    });
-    if (result.killed || (result.code !== 0 && result.code !== 1)) {
+    let result:
+      | { stdout: string; stderr: string; code: number; killed: boolean }
+      | undefined;
+    try {
+      result = await exec("rg", ["--json", ...patterns, "--", ...paths], {
+        cwd: inventory.cwd,
+        timeout: TIMEOUT_MS,
+        signal,
+      });
+    } catch {
+      // A missing or unstartable rg is an unavailable search, not a failure.
+      signal?.throwIfAborted();
+    }
+    if (!result || result.killed || (result.code !== 0 && result.code !== 1)) {
       inventory.limits.push({
         path: "documentation",
         reason: "declaration search unavailable",
