@@ -33,6 +33,7 @@ import {
   known,
   type RawValue,
 } from "../core/result-report.ts";
+import { secretRefusal } from "../core/secret-path.ts";
 import { interpolate } from "../describe.ts";
 import type { GuideContext } from "../guide.ts";
 import type { Answer, Judgment, Question, State } from "../jev/types.ts";
@@ -410,6 +411,8 @@ export function createFindFilesTool(dependencies: ToolDependencies) {
         failureCause = candidates.cause ?? "git_failure";
         return finish({ refusal: candidates.error });
       }
+      for (const path of candidates.secret)
+        diagnostic("secret_pattern", secretRefusal(path), [path]);
       context.inventories.push({
         id: "candidates",
         kind: "repository",

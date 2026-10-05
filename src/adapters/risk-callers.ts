@@ -9,6 +9,7 @@ import {
   type CallerSource,
   prepareRiskCallers,
 } from "../core/risk-callers.ts";
+import { SECRET_NAME_GLOBS } from "../core/secret-path.ts";
 import type { SyntaxRootParser } from "../core/syntax.ts";
 import type { EvidenceUnit, SourceFile } from "../core/units.ts";
 import {
@@ -201,6 +202,8 @@ export async function collectRiskCallers(
         ref,
         "--",
         ...extensions.map((extension) => `*.${extension}`),
+        // Base-tree secret-named files are never searched or read.
+        ...SECRET_NAME_GLOBS.map((glob) => `:(exclude,icase,glob)**/${glob}`),
       ],
       { cwd, timeout: TIMEOUT_MS, signal: options.signal },
     ).catch((error: unknown) => ({

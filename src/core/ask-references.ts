@@ -1,10 +1,13 @@
 import { ASK_MAX_FILES } from "../constants.ts";
 import type { Question, State } from "../jev/types.ts";
+import type { Cause } from "../result-types.ts";
 import type { CompiledAsks } from "./asks.ts";
 
 export interface UnresolvedAskReference {
   reference: string;
   reason: string;
+  /** Admission cause when the reference was refused, e.g. `secret_pattern`. */
+  cause?: Cause;
   required?: boolean;
   origin?: "question" | "note";
   scope?: string;

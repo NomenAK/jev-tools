@@ -284,10 +284,13 @@ export function createAskFilesTool(dependencies: ToolDependencies) {
       collectedPaths = collected.files.map((file) => file.path);
       skipped = collected.skipped;
       for (const skippedPath of skipped)
-        diagnose("collection_omitted", skippedPath, {
-          kind: "inventory",
-          inventoryIds: ["files"],
-        });
+        diagnose(
+          collected.secret.includes(skippedPath)
+            ? "secret_pattern"
+            : "collection_omitted",
+          skippedPath,
+          { kind: "inventory", inventoryIds: ["files"] },
+        );
       if (!collected.files.length && skipped.length)
         return finish({
           refusal: `No readable evidence: ${skipped.join("; ")}`,

@@ -305,7 +305,13 @@ export async function runDocsCheck(
     )
       evidenceContext.effectiveRoot.path = repositoryRoot.stdout.trim();
     for (const limit of collected.limits) {
-      report.diagnose("collection_omitted", limit.kind, limit.file);
+      report.diagnose(
+        limit.kind === "secret_pattern"
+          ? "secret_pattern"
+          : "collection_omitted",
+        limit.kind,
+        limit.file,
+      );
       limitations.push({
         fact: `${limit.file} : ${limit.kind}`,
         next: "Read the complete change before concluding.",
@@ -391,7 +397,13 @@ export async function runDocsCheck(
         );
     }
     for (const limit of inventory.limits)
-      report.diagnose("collection_omitted", limit.reason, limit.path);
+      report.diagnose(
+        limit.cause === "secret_pattern"
+          ? "secret_pattern"
+          : "collection_omitted",
+        limit.reason,
+        limit.path,
+      );
     for (const limit of inventory.limits)
       limitations.push({
         fact: `${limit.path} : ${limit.reason}`,

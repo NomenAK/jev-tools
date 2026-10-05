@@ -372,7 +372,9 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
         report.expect(`unit:${unit.id}`, unitLabel(unit), "unit");
       for (const limit of collected.limits)
         report.diagnose(
-          "collection_omitted",
+          limit.kind === "secret_pattern"
+            ? "secret_pattern"
+            : "collection_omitted",
           `${limit.file}: ${limit.kind}`,
           limit.file,
         );

@@ -19,6 +19,7 @@ import {
 import { createExcerptCollector } from "../core/find.ts";
 import type { GitExec } from "../core/git.ts";
 import type { FileIdentity } from "../core/integrity.ts";
+import { isSecretPath, secretRefusal } from "../core/secret-path.ts";
 import type { Result } from "../result.ts";
 import type { Cause } from "../result-types.ts";
 import { createUtf8Decoder, decodeUtf8 } from "./utf8.ts";
@@ -36,6 +37,9 @@ export async function checkFileAdmission(
       cause: "forbidden_path",
       error: `${path}: .git metadata: not sent to Jev`,
     };
+  // Before any inventory lookup or read: secret names are never admitted.
+  if (isSecretPath(path))
+    return { ok: false, cause: "secret_pattern", error: secretRefusal(path) };
   if (inventory)
     return inventory.has(path)
       ? { ok: true }

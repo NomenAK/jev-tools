@@ -2,6 +2,7 @@ import { type FileHandle, lstat } from "node:fs/promises";
 import { TEST_SOURCE_MAX_BYTES, TIMEOUT_MS } from "../constants.ts";
 import type { GitExec } from "../core/git.ts";
 import type { ImportSource } from "../core/imports.ts";
+import { isSecretPath } from "../core/secret-path.ts";
 import type { Result } from "../result.ts";
 import {
   checkFileAdmission,
@@ -21,7 +22,7 @@ export async function collectTestInventory(
     read(path: string): Promise<ImportSource | undefined>;
     limits: readonly {
       path: string;
-      kind: "unreadable" | "too_large" | "not UTF-8 text";
+      kind: "unreadable" | "too_large" | "not UTF-8 text" | "secret_pattern";
     }[];
   }>
 > {
@@ -67,7 +68,7 @@ export async function collectTestInventory(
       error: ignored.stderr || "Cannot identify ignored tracked files.",
     };
   const excluded = new Set(ignored.stdout.split("\0").filter(Boolean));
-  const paths = listed.stdout
+  const listedPaths = listed.stdout
     .split("\0")
     .filter(
       (path) =>
@@ -75,11 +76,15 @@ export async function collectTestInventory(
         (!excluded.has(path) ||
           /(?:^|\/)(?:package|tsconfig[^/]*)\.json$/.test(path)),
     );
+  // Secret-named files are named exclusions, never inventory members to read.
+  const paths = listedPaths.filter((path) => !isSecretPath(path));
   const admitted = new Set(paths);
   const limits: {
     path: string;
-    kind: "unreadable" | "too_large" | "not UTF-8 text";
-  }[] = [];
+    kind: "unreadable" | "too_large" | "not UTF-8 text" | "secret_pattern";
+  }[] = listedPaths
+    .filter(isSecretPath)
+    .map((path) => ({ path, kind: "secret_pattern" as const }));
   const cache = new Map<string, Promise<ImportSource | undefined>>();
   for (let offset = 0; offset < paths.length; offset += 16) {
     const inspected = await Promise.all(

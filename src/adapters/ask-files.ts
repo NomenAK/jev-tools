@@ -23,7 +23,7 @@ export async function collectAskFiles(
   paths: readonly string[],
   signal?: AbortSignal,
   exec?: GitExec,
-): Promise<Result<{ files: AskFile[]; skipped: string[] }>> {
+): Promise<Result<{ files: AskFile[]; skipped: string[]; secret: string[] }>> {
   if (!paths.length)
     return {
       ok: false,
@@ -42,6 +42,7 @@ export async function collectAskFiles(
       };
   }
   const skipped = new Set<string>();
+  const secret = new Set<string>();
   const candidates = new Set<string>();
   try {
     let inventory: Set<string> | undefined;
@@ -63,7 +64,9 @@ export async function collectAskFiles(
         inventory,
       );
       if (!admission.ok) {
-        skipped.add(`${path} (${admission.error})`);
+        const entry = `${path} (${admission.error})`;
+        skipped.add(entry);
+        if (admission.cause === "secret_pattern") secret.add(entry);
         return;
       }
       if (path.split("/").some((part) => excludedDirectories.has(part)))
@@ -229,7 +232,12 @@ export async function collectAskFiles(
         };
       }
     }
-    return { ok: true, files, skipped: [...skipped].sort() };
+    return {
+      ok: true,
+      files,
+      skipped: [...skipped].sort(),
+      secret: [...secret].sort(),
+    };
   } catch (error) {
     return { ok: false, error: `Cannot expand paths: ${String(error)}` };
   }

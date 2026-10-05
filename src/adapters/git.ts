@@ -7,6 +7,7 @@ import {
 } from "../constants.ts";
 import { type DiffFile, parseDiff } from "../core/diff.ts";
 import type { GitExec } from "../core/git.ts";
+import { isSecretPath } from "../core/secret-path.ts";
 import {
   buildUnits,
   type EvidenceUnit,
@@ -253,8 +254,15 @@ export async function collectDiff(
     };
   }
   const unsupported: string[] = [];
+  // Secret-named paths (either side of a rename) stay named exclusions;
+  // excluding them from every later pathspec keeps Git from emitting their
+  // patch text or pairing them into a rename.
+  const secret = candidates
+    .filter((file) => isSecretPath(file.path) || isSecretPath(file.oldPath))
+    .map((file) => file.path);
   await Promise.all(
     candidates.map(async (file) => {
+      if (secret.includes(file.path)) return;
       try {
         const stat = await lstat(resolve(cwd, file.path));
         if (
@@ -269,7 +277,11 @@ export async function collectDiff(
       }
     }),
   );
-  for (const path of unsupported) paths.push(`:(top,exclude,literal)${path}`);
+  for (const path of [...unsupported, ...secret])
+    paths.push(`:(top,exclude,literal)${path}`);
+  for (const file of candidates)
+    if (secret.includes(file.path) && file.oldPath !== file.path)
+      paths.push(`:(top,exclude,literal)${file.oldPath}`);
   const prefix = [
     "diff",
     "--no-color",
@@ -372,13 +384,18 @@ export async function collectDiff(
       kind: "inconsistent_diff",
     };
   }
-  files.push(...candidates.filter((file) => unsupported.includes(file.path)));
+  files.push(
+    ...candidates.filter(
+      (file) => unsupported.includes(file.path) || secret.includes(file.path),
+    ),
+  );
   const objects = new Map<string, { id: string; size: number }>();
   for (const file of files) {
     if (
       /^[A?]/.test(file.status) ||
       file.binary ||
-      unsupported.includes(file.path)
+      unsupported.includes(file.path) ||
+      secret.includes(file.path)
     )
       continue;
     const admission = await admitGitPath(
@@ -407,6 +424,18 @@ export async function collectDiff(
   const collectFile = async (
     file: DiffFile,
   ): Promise<CollectionResult<{ file: SourceFile }>> => {
+    if (secret.includes(file.path))
+      return {
+        ok: true,
+        file: {
+          ...file,
+          hunks: [],
+          binary: false,
+          before: null,
+          after: null,
+          limitation: "secret_pattern",
+        },
+      };
     const historical = !/^[A?]/.test(file.status);
     const admission = historical
       ? await admitGitPath(

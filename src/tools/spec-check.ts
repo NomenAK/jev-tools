@@ -251,7 +251,7 @@ export async function runSpecCheck(
     );
   for (const limit of collected.limits)
     report.diagnose(
-      "collection_omitted",
+      limit.kind === "secret_pattern" ? "secret_pattern" : "collection_omitted",
       limit.kind,
       limit.file,
       reportIds,

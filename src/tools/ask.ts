@@ -80,7 +80,7 @@ interface AskEvidenceFacts {
     scope?: string;
     required?: boolean;
   }[];
-  blockedGroups: { ids: string[]; reason: string }[];
+  blockedGroups: { ids: string[]; reason: string; cause?: Cause }[];
   inventory: string[];
 }
 
@@ -379,7 +379,7 @@ export function createAskTool(dependencies: ToolDependencies) {
                     )
                 : undefined;
               const cause = blocked
-                ? "missing_required"
+                ? (blocked.cause ?? "missing_required")
                 : groupFailure?.type === "unjudged" && groupFailure.cause
                   ? groupFailure.cause
                   : input.budget
@@ -773,7 +773,11 @@ export function createAskTool(dependencies: ToolDependencies) {
           else {
             if (before.cause === "forbidden_path")
               return textResult(before.error, before.cause);
-            unresolved.push({ ...reference, reason: before.error });
+            unresolved.push({
+              ...reference,
+              reason: before.error,
+              ...(before.cause ? { cause: before.cause } : {}),
+            });
           }
         }
       }
@@ -801,7 +805,12 @@ export function createAskTool(dependencies: ToolDependencies) {
                 requestedPath: local,
               })),
             );
-          } else unresolved.push({ ...addition, reason: added.error });
+          } else
+            unresolved.push({
+              ...addition,
+              reason: added.error,
+              ...(added.cause ? { cause: added.cause } : {}),
+            });
         }
       }
       const state = assembleState(args.state, files.files);
@@ -1032,14 +1041,22 @@ export function createAskTool(dependencies: ToolDependencies) {
       );
       evidenceFacts.blockedGroups = asks.groups
         .filter((group) => group.some((id) => blocked.has(id)))
-        .map((ids) => ({
-          ids,
-          reason:
+        .map((ids) => {
+          const reason =
             ids
               .map((id) => blocked.get(id))
               .find((reason) => reason !== undefined) ??
-            "Required evidence unavailable",
-        }));
+            "Required evidence unavailable";
+          // A secret refusal stays named as such instead of missing_required.
+          const secret = unresolved.some(
+            (item) => item.reason === reason && item.cause === "secret_pattern",
+          );
+          return {
+            ids,
+            reason,
+            ...(secret ? { cause: "secret_pattern" as const } : {}),
+          };
+        });
       const questions = Object.fromEntries(
         Object.entries(asks.questions).filter(
           ([id]) => !blockedMembers.has(id),

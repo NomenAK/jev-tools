@@ -7,6 +7,7 @@ import {
 } from "../constants.ts";
 import { pathAllowed } from "../core/find.ts";
 import type { GitExec } from "../core/git.ts";
+import { isSecretPath, SECRET_NAME_GLOBS } from "../core/secret-path.ts";
 import type { Result } from "../result.ts";
 
 export async function prefilter(
@@ -18,7 +19,7 @@ export async function prefilter(
   exclude?: readonly string[],
   signal?: AbortSignal,
   native = true,
-): Promise<Result<{ paths: string[]; scopeFiles: number }>> {
+): Promise<Result<{ paths: string[]; scopeFiles: number; secret: string[] }>> {
   const restrictions = [
     ...(typeof scope === "string" ? [scope] : (scope ?? [])),
     ...(exclude ?? []),
@@ -48,17 +49,22 @@ export async function prefilter(
         cause: signal?.aborted ? "cancelled" : "git_failure",
         error: `Cannot list repository files: ${listed.stderr || "git interrupted"}`,
       };
-    const paths = [
+    const inScope = [
       ...new Set(
         listed.stdout
           .split("\0")
           .filter((path) => path && pathAllowed(path, scope, exclude)),
       ),
     ];
-    if (!paths.length) return { ok: true, paths: [], scopeFiles: 0 };
+    // Secret-named files are neither ranked, read nor named to Jev.
+    const secret = inScope.filter(isSecretPath);
+    const paths = inScope.filter((path) => !isSecretPath(path));
+    if (!paths.length) return { ok: true, paths: [], scopeFiles: 0, secret };
     const allowed = new Set(paths);
     let finder: FileFinder | undefined;
-    if (native) {
+    // The native index cannot skip files, so it never scans a scope that
+    // holds secret-named files; rg excludes them by name instead.
+    if (native && !secret.length) {
       try {
         // Static loading would break hosts where this optional native package is absent.
         const { FileFinder } = await import("@ff-labs/fff-node");
@@ -116,8 +122,8 @@ export async function prefilter(
               "--files-with-matches",
               "--hidden",
               "--null",
-              "--fixed-strings",
-              "--ignore-case",
+              "--glob-case-insensitive",
+              ...SECRET_NAME_GLOBS.flatMap((glob) => ["--glob", `!${glob}`]),
               "--",
               word,
               ".",
@@ -160,6 +166,7 @@ export async function prefilter(
           .slice(0, limit)
           .map((item) => item.path),
         scopeFiles: paths.length,
+        secret,
       };
     } finally {
       finder?.destroy();

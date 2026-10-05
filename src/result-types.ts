@@ -63,6 +63,7 @@ export type Cause =
   | "invalid_base"
   | "forbidden_path"
   | "ignored_path"
+  | "secret_pattern"
   | "symlink"
   | "binary_or_non_utf8"
   | "missing_required"

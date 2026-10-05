@@ -328,7 +328,7 @@ test("fallback lexical search ranks path matches above content and honors killed
     async (command) => ({
       stdout:
         command === "git"
-          ? "src/invoice.ts\0src/other.ts\0test/invoice.ts\0"
+          ? "src/invoice.ts\0src/other.ts\0test/invoice.ts\0src/.env\0src/.env.example\0"
           : "./src/other.ts\0",
       stderr: "",
       code: 0,
@@ -345,7 +345,8 @@ test("fallback lexical search ranks path matches above content and honors killed
   assert.deepEqual(result, {
     ok: true,
     paths: ["src/invoice.ts", "src/other.ts"],
-    scopeFiles: 2,
+    scopeFiles: 3,
+    secret: ["src/.env"],
   });
   const killed = await prefilter(
     async () => ({ stdout: "", stderr: "", code: 0, killed: true }),
@@ -492,7 +493,7 @@ test("zero lexical overlap returns no candidates rather than arbitrary files", a
     undefined,
     false,
   );
-  assert.deepEqual(result, { ok: true, paths: [], scopeFiles: 1 });
+  assert.deepEqual(result, { ok: true, paths: [], scopeFiles: 1, secret: [] });
 });
 test("dense window excludes the header instead of repeating it", () => {
   const collector = createExcerptCollector(["billing"], 1500);

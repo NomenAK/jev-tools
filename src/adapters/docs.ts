@@ -5,6 +5,7 @@ import {
 } from "../core/docs.ts";
 import type { GitExec } from "../core/git.ts";
 import type { Result } from "../result.ts";
+import type { Cause } from "../result-types.ts";
 import {
   checkFileAdmission,
   openRepoFile,
@@ -20,7 +21,7 @@ export interface DocsInventory {
   cwd: string;
   files: DocsSource[];
   tracked: ReadonlySet<string>;
-  limits: { path: string; reason: string }[];
+  limits: { path: string; reason: string; cause?: Cause }[];
   read: (path: string) => Promise<DocsSource | undefined>;
 }
 /** Inventory paths eagerly, but load only Markdown/configuration and subsequently reached sources. */
@@ -72,7 +73,11 @@ export async function collectDocsInventory(
           inventory: tracked,
         });
         if (!opened.ok) {
-          limits.push({ path, reason: opened.error });
+          limits.push({
+            path,
+            reason: opened.error,
+            ...(opened.cause ? { cause: opened.cause } : {}),
+          });
           return undefined;
         }
         const handle = opened.handle;
@@ -170,18 +175,22 @@ export function docsDeclarationSearch(
             const path = candidates[index++];
             if (path === undefined) return;
             const location = await resolveInsideRepo(inventory.cwd, path);
-            const admitted =
-              location.ok &&
-              (
-                await checkFileAdmission(
+            const admission = location.ok
+              ? await checkFileAdmission(
                   inventory.cwd,
                   location.rel,
                   exec,
                   signal,
                   inventory.tracked,
                 )
-              ).ok;
-            if (admitted) paths.push(path);
+              : location;
+            if (admission.ok) paths.push(path);
+            else if (admission.cause === "secret_pattern")
+              inventory.limits.push({
+                path,
+                reason: admission.error,
+                cause: admission.cause,
+              });
           }
         }),
       );

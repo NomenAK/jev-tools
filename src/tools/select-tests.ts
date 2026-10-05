@@ -1090,9 +1090,21 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
             limit.kind !== "interactive_script_skipped",
         );
       for (const limit of inventory.limits)
-        report.diagnose("collection_omitted", limit.kind, limit.path);
+        report.diagnose(
+          limit.kind === "secret_pattern"
+            ? "secret_pattern"
+            : "collection_omitted",
+          limit.kind,
+          limit.path,
+        );
       for (const limit of diff.limits)
-        report.diagnose("collection_omitted", limit.kind, limit.file);
+        report.diagnose(
+          limit.kind === "secret_pattern"
+            ? "secret_pattern"
+            : "collection_omitted",
+          limit.kind,
+          limit.file,
+        );
       for (const limit of graph.limits)
         report.diagnose(
           "dynamic_dependency",
