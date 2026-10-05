@@ -83,7 +83,7 @@ test("an oversized question group is still sent as one request", async () => {
   // Three ~22k-token questions in one indivisible group total ~66k tokens,
   // past the 60k request-packing budget; the group stays together and the
   // endpoint decides, while each question clears the per-evaluation bound.
-  const trio = Object.fromEntries(
+  const trio: Record<string, Question> = Object.fromEntries(
     ["a", "b", "c"].map((id) => [
       id,
       { type: "bool", instructions: `${id} ${big}` },

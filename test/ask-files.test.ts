@@ -137,9 +137,7 @@ test("all asks share each exact file state, parallel judgments obey max_calls an
     );
     const report = result.details.result;
     const text = result.content[0]?.text ?? "";
-    const judged = report.items.filter(
-      (item) => item.treatment === "judged",
-    );
+    const judged = report.items.filter((item) => item.treatment === "judged");
     assert.equal(judged.length, 4);
     assert.ok(
       judged.every(
@@ -150,9 +148,7 @@ test("all asks share each exact file state, parallel judgments obey max_calls an
           item.judgment.result === false,
       ),
     );
-    const pending = report.items.filter(
-      (item) => item.treatment !== "judged",
-    );
+    const pending = report.items.filter((item) => item.treatment !== "judged");
     assert.equal(pending.length, 2);
     assert.ok(pending.every((item) => item.label.includes("c.ts")));
     assert.ok(
