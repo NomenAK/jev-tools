@@ -9,6 +9,8 @@ modules are not a stable library API.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-05
+
 ### Breaking
 
 - `JEV_TOOLS_URL` (and saved or flag URLs) with plain `http:` is refused unless the host is `127.0.0.1`, `::1` or `localhost`; use `https:`. The configuration error shows neither the URL nor the key and occurs before any request.
@@ -16,7 +18,7 @@ modules are not a stable library API.
 
 ### Security
 
-- `jev_ask` commands and the Windows PowerShell ACL helper no longer inherit `JEV_TOOLS_API_KEY`. The configured key value (environment or saved configuration) is replaced with `[redacted]` in command output before state assembly, and the number of replacements is reported as a limitation.
+- `jev_ask` commands and the Windows PowerShell ACL helper no longer inherit `JEV_TOOLS_API_KEY`. The configured key value (environment or saved configuration) is replaced with `[redacted]` in command output before state assembly, including a key prefix left where a long output line is cut, and the number of replacements is reported as a limitation.
 
 ### Added
 
@@ -175,7 +177,8 @@ Tagged but never published to npm: the unscoped package name was rejected.
 
 Tagged but never published to npm: the publish workflow failed before upload.
 
-[Unreleased]: https://github.com/NomenAK/jev-tools/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/NomenAK/jev-tools/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/NomenAK/jev-tools/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/NomenAK/jev-tools/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/NomenAK/jev-tools/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/NomenAK/jev-tools/compare/v0.1.0...v0.1.3

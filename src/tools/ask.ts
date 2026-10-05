@@ -606,11 +606,10 @@ export function createAskTool(dependencies: ToolDependencies) {
         };
       if (command && !command.ok) {
         commandContext = {
-          // Normatif ResultReportV1 (#189 addendum) : not_requested /
-          // not_started / started / finished. Un spawn sans complétion
-          // observée (commandExecution "unknown" de l'adapter) est démarré,
-          // pas non-démarré : mapper vers "started", exitCode/timedOut
-          // unknown. Schéma C inchangé (unknown = valeur morte inémise).
+          // Reported execution states are not_requested, not_started, started
+          // and finished. A spawn whose completion was not observed (adapter
+          // "unknown") did start, so it reports "started" with unknown exit
+          // code and timeout.
           execution:
             command.commandExecution === "unknown"
               ? "started"

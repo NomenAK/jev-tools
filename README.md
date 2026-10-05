@@ -13,15 +13,15 @@ Install through your host's package manager, or register the MCP server with an 
 ### pi
 
 ```sh
-pi install npm:jev-agent-tools@0.2.0
+pi install npm:jev-agent-tools@0.3.0
 # Project-local installation:
-pi install -l npm:jev-agent-tools@0.2.0
+pi install -l npm:jev-agent-tools@0.3.0
 ```
 
 ### omp
 
 ```sh
-omp plugin install jev-agent-tools@0.2.0
+omp plugin install jev-agent-tools@0.3.0
 ```
 
 ### Any MCP client
