@@ -48,9 +48,17 @@ export async function captureCommand(
     selectedPassages: boolean;
     assertion: boolean;
     targets: FailureTarget[];
-  }>
+  }> & {
+    commandExecution: "not_started" | "unknown" | "finished";
+    commandExitCode?: number | null;
+    commandTimedOut?: boolean;
+  }
 > {
   const directory = await mkdtemp(join(tmpdir(), "jev-output-"));
+  let commandExecution: "not_started" | "unknown" | "finished" = "not_started";
+  let completion:
+    | { commandExitCode: number | null; commandTimedOut: boolean }
+    | undefined;
   try {
     await chmod(directory, 0o700);
     const stdoutPath = join(directory, "stdout");
@@ -65,7 +73,14 @@ export async function captureCommand(
     try {
       const shell = resolveShell();
       // Fail closed: never spawn a bare name that PATH could resolve to WSL.
-      if (!shell.ok) throw new Error(shell.error);
+      if (!shell.ok)
+        return {
+          ok: false,
+          cause: "file_unavailable",
+          commandExecution: "not_started",
+          error: shell.error,
+        };
+      commandExecution = "unknown";
       executed = await exec(
         shell.executable,
         [
@@ -78,26 +93,18 @@ export async function captureCommand(
         ],
         { cwd, timeout: timeoutS * 1000, signal },
       );
+      commandExecution = "finished";
+      completion = {
+        commandExitCode: executed.killed ? null : executed.code,
+        commandTimedOut: executed.killed,
+      };
     } catch (error) {
       signal?.throwIfAborted();
       return {
-        ok: true,
-        output: {
-          command,
-          exit_code: null,
-          timed_out: false,
-          stdout: "",
-          stderr: `Command executable unavailable: ${String(error)}`,
-          compressed: true,
-          truncated: false,
-        },
-        originalBytes: 0,
-        compressedChars: 0,
-        lineOmittedChars: 0,
-        shapeLimitExceeded: false,
-        selectedPassages: false,
-        assertion: false,
-        targets: [],
+        ok: false,
+        cause: "file_unavailable",
+        commandExecution,
+        error: `Command executable unavailable: ${String(error)}`,
       };
     }
     signal?.throwIfAborted();
@@ -119,6 +126,9 @@ export async function captureCommand(
     if (sizes.some((size) => size > OUTPUT_FILE_MAX_BYTES))
       return {
         ok: false,
+        cause: "evidence_too_large",
+        commandExecution: "finished",
+        ...completion,
         error: `output exceeded ${OUTPUT_FILE_MAX_BYTES} bytes per stream; narrow command`,
       };
     const targets: FailureTarget[] = [];
@@ -220,6 +230,8 @@ export async function captureCommand(
     }
     return {
       ok: true,
+      commandExecution: "finished",
+      ...completion,
       output: {
         command,
         exit_code: executed.killed ? null : executed.code,
@@ -236,6 +248,15 @@ export async function captureCommand(
       selectedPassages: false,
       assertion: signature === "assertion",
       targets,
+    };
+  } catch (error) {
+    signal?.throwIfAborted();
+    return {
+      ok: false,
+      cause: "file_unavailable",
+      commandExecution,
+      ...completion,
+      error: `Command capture unavailable: ${String(error)}`,
     };
   } finally {
     await rm(directory, { recursive: true, force: true });

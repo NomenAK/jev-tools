@@ -2,7 +2,14 @@ import { ASK_NOTE_MAX_CHARS, STATE_MAX_CHARS } from "../constants.ts";
 import type { State } from "../jev/types.ts";
 import { isRecord, type Result } from "../result.ts";
 
-const reservedKeys = ["files", "files_before", "base_sha", "closure"] as const;
+const reservedKeys = [
+  "files",
+  "files_before",
+  "base_sha",
+  "closure",
+  "evidence",
+  "output",
+] as const;
 
 export function assembleState(
   note: string | undefined,

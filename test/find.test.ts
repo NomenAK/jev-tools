@@ -17,7 +17,7 @@ import type { Answer, JevClient } from "../src/jev/types.ts";
 import { Session } from "../src/session.ts";
 import { createFindFilesTool } from "../src/tools/find.ts";
 
-test("an empty scope returns none without asking Jev", async () => {
+test("an empty scope returns not judged without asking Jev", async () => {
   const client: JevClient = {
     clearCache() {},
     async judge() {
@@ -46,8 +46,9 @@ test("an empty scope returns none without asking Jev", async () => {
     undefined,
     { cwd: process.cwd() },
   );
-  assert.match(output.content[0]?.text ?? "", /entry: none/u);
-  assert.match(output.content[0]?.text ?? "", /scope matched 0 files/u);
+  assert.equal(output.details.result.execution, "not_judged");
+  assert.equal(output.details.result.items[0]?.treatment, "not_judged");
+  assert.equal(output.details.result.diagnostics[0]?.cause, "collection_empty");
 });
 test("keyword excerpts preserve Unicode and retain the dense passage", () => {
   const text =
@@ -198,6 +199,7 @@ for (const scenario of [
               answers: {
                 entry: {
                   type: "choice",
+                  source: "fresh",
                   choice: "c1",
                   confidence: 0.99,
                   probabilities: Object.fromEntries(
@@ -213,7 +215,7 @@ for (const scenario of [
           const answers: Record<string, Answer> = Object.fromEntries(
             Object.keys(questions).map((id) => [
               id,
-              { type: "bool", p: id === "a.ts" ? 0.95 : 0.6 },
+              { type: "bool", source: "fresh", p: id === "a.ts" ? 0.95 : 0.6 },
             ]),
           );
           return {
@@ -259,13 +261,33 @@ for (const scenario of [
         { cwd },
       );
       const text = result.content[0]?.text ?? "";
-      if (scenario.mark) assert.ok(text.includes(scenario.mark), text);
+      const item = result.details.result.items[0];
+      assert.ok(item);
+      assert.equal(item.treatment, "judged");
+      if (item.treatment === "judged") {
+        assert.equal(
+          item.judgment.result,
+          scenario.mark?.includes("none")
+            ? "none"
+            : scenario.name === "two orders disagree"
+              ? "b.ts"
+              : "a.ts",
+        );
+        assert.equal(item.judgment.band, scenario.mark ? "verdict" : "unsure");
+        if (scenario.name === "two orders disagree")
+          assert.equal(item.judgment.controls[0]?.outcome, "order-dependent");
+        if (item.judgment.result === "none") {
+          const action = result.details.result.actions.find((action) =>
+            item.actionIds.includes(action.id),
+          );
+          assert.ok(action);
+          assert.equal(action.code, "inspect_native");
+          assert.match(action.instruction, /search elsewhere/i);
+          assert.equal(action.repeatUnchanged, false);
+        }
+      }
       assert.equal(calls, scenario.calls);
-      assert.match(text, /relevant:\n/u);
-      if (!scenario.mark?.includes("none"))
-        assert.match(text, /read [ab]\.ts/u);
-      if (scenario.name === "two orders disagree")
-        assert.match(text, /order-dependent/u);
+      assert.match(text, /auxiliary ranking/);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -350,7 +372,11 @@ test("max_calls stops the cascade and preserves names as unsure", async () => {
           answers: Object.fromEntries(
             Object.keys(questions).map((path) => [
               path,
-              { type: "unjudged", reason: admission.error },
+              {
+                type: "unjudged",
+                reason: admission.error,
+                cause: "call_budget",
+              },
             ]),
           ),
         };
@@ -362,7 +388,7 @@ test("max_calls stops the cascade and preserves names as unsure", async () => {
         answers: Object.fromEntries(
           Object.keys(questions).map((path) => [
             path,
-            { type: "bool", p: 0.95 },
+            { type: "bool", source: "fresh", p: 0.95 },
           ]),
         ),
       };
@@ -392,9 +418,17 @@ test("max_calls stops the cascade and preserves names as unsure", async () => {
       undefined,
       { cwd },
     );
-    const text = result.content[0]?.text ?? "";
-    assert.match(text, /max_calls=1 reached/u);
-    assert.match(text, /unchecked: a.ts/u);
+    const report = result.details.result;
+    assert.equal(report.execution, "not_judged");
+    assert.equal(report.items[0]?.treatment, "not_judged");
+    assert.equal(report.accounting.httpAttempts, 1);
+    const budget = report.diagnostics.find(
+      (diagnostic) => diagnostic.cause === "call_budget",
+    );
+    assert.ok(budget);
+    assert.deepEqual(budget.omittedMembers, ["a.ts"]);
+    assert.deepEqual(budget.memberCount, { status: "known", value: 1 });
+    assert.ok(report.actions.every((action) => !action.repeatUnchanged));
     assert.equal(requests, 1);
   } finally {
     await rm(cwd, { recursive: true, force: true });
@@ -509,6 +543,7 @@ test("a singleton pointer never requests another order even in thorough mode", a
             answers: {
               entry: {
                 type: "choice",
+                source: "fresh",
                 choice: "c1",
                 confidence: 0.6,
                 probabilities: { c1: 0.6, none: 0.4 },
@@ -519,7 +554,10 @@ test("a singleton pointer never requests another order even in thorough mode", a
         return {
           ok: true,
           answers: Object.fromEntries(
-            Object.keys(questions).map((id) => [id, { type: "bool", p: 0.95 }]),
+            Object.keys(questions).map((id) => [
+              id,
+              { type: "bool", source: "fresh", p: 0.95 },
+            ]),
           ),
         };
       },
@@ -547,7 +585,10 @@ test("a singleton pointer never requests another order even in thorough mode", a
       { cwd },
     );
     assert.equal(pointers, 1);
-    assert.match(result.content[0]?.text ?? "", /unsure {2}entry/u);
+    const item = result.details.result.items[0];
+    assert.ok(item);
+    assert.equal(item.treatment, "judged");
+    if (item.treatment === "judged") assert.equal(item.judgment.band, "unsure");
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

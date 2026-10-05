@@ -18,6 +18,7 @@ Each admitted file is judged alone as `path` and `content`. Every ask applies to
 
 | Field | Type / default | Meaning |
 |---|---|---|
+| `root` | Optional nonempty string | Exact initial Git root or registered worktree of the same repository; see [evidence-root admission](../../README.md#evidence-root). |
 | `paths` | Required nonempty array of nonempty strings | Repository-relative files, recursive directories or globs; at most 255 admitted files. |
 | `asks` | Required typed intent, nonempty array of intents, or JSON string encoding them | All asks apply to every admitted file. An array is the clearest form. |
 | `max_calls` | Optional non-negative integer | Request limit for this invocation; remaining files are listed unchecked. Separate from session budgets. |
@@ -65,7 +66,7 @@ Illustrative call with fictional repository paths, not a recorded execution:
 
 ## Results and next action
 
-Results preserve the exact statement next to each file's answer. Boolean `yes` or `no (not shown)` includes the probability of yes; intermediate probabilities between 0.20 and 0.80 are unsure. Categories and levels need a leading-option probability of at least 0.85 after applicable controls. `classify`, `rate`, `decide` and `free` are uncalibrated; sharing a display band does not establish an error rate. Failed integrity or option-order controls make clear-looking results unsure. Read the candidate file before acting. Skipped and unchecked files and bracketed limits explain missing work. See [shared result reading](../../README.md#read-the-results).
+Results preserve the exact statement next to each file's answer and distinguish fresh/cache judgments from unjudged files. Boolean `yes` or `no (not shown)` includes the probability of yes; intermediate probabilities between 0.20 and 0.80 are unsure. Categories and levels need a leading-option probability of at least 0.85 after applicable controls. `classify`, `rate`, `decide` and `free` are uncalibrated; sharing a display band does not establish an error rate. Failed integrity or option-order controls make clear-looking results unsure; missing required judgments never become fabricated probabilities. Read the candidate file before acting. Typed diagnostics and actions explain skipped/unchecked files, causes and scope. See [shared result reading](../../README.md#read-the-results).
 
 ## Limits and failure behavior
 

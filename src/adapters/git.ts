@@ -22,7 +22,12 @@ import { decodeUtf8, verifyGitUtf8 } from "./utf8.ts";
 
 export type CollectionResult<T> =
   | Result<T>
-  | { ok: false; kind: "inconsistent_diff"; error: string };
+  | {
+      ok: false;
+      kind: "inconsistent_diff";
+      cause: "git_failure";
+      error: string;
+    };
 export interface DiffOptions {
   cwd: string;
   base: string;
@@ -62,13 +67,22 @@ async function git(
     if (result.killed)
       return {
         ok: false,
+        cause: options.signal?.aborted ? "cancelled" : "git_failure",
         error: "Git interrupted (cancelled or timed out).",
       };
     if (result.code !== 0)
-      return { ok: false, error: `Git failed: ${result.stderr}` };
+      return {
+        ok: false,
+        cause: "git_failure",
+        error: `Git failed: ${result.stderr}`,
+      };
     return { ok: true, text: result.stdout };
   } catch (error) {
-    return { ok: false, error: `Unable to execute git: ${String(error)}` };
+    return {
+      ok: false,
+      cause: options.signal?.aborted ? "cancelled" : "git_failure",
+      error: `Unable to execute git: ${String(error)}`,
+    };
   }
 }
 type ReadSource = {
@@ -233,6 +247,7 @@ export async function collectDiff(
   } catch {
     return {
       ok: false,
+      cause: "git_failure",
       error: "Inconsistent Git snapshots; collect again.",
       kind: "inconsistent_diff",
     };
@@ -329,7 +344,11 @@ export async function collectDiff(
     !current.ok ||
     !base.ok
   )
-    return { ok: false, error: "Incomplete Git collection." };
+    return {
+      ok: false,
+      cause: "git_failure",
+      error: "Incomplete Git collection.",
+    };
   const currentInventory = new Set(current.text.split("\0").filter(Boolean));
   const baseInventory = new Map<string, string>();
   for (const entry of base.text.split("\0")) {
@@ -348,6 +367,7 @@ export async function collectDiff(
   } catch {
     return {
       ok: false,
+      cause: "git_failure",
       error: "Inconsistent Git snapshots; collect again.",
       kind: "inconsistent_diff",
     };
@@ -453,7 +473,11 @@ export async function collectDiff(
     if (!/^[A?]/.test(file.status)) {
       const object = objects.get(file.oldPath);
       if (!object)
-        return { ok: false, error: "Incomplete Git base tree; collect again." };
+        return {
+          ok: false,
+          cause: "git_failure",
+          error: "Incomplete Git base tree; collect again.",
+        };
       if (object.size > STATE_MAX_CHARS) limitation = "too_large";
       else if (loaded.invalid.has(object.id)) limitation = "not UTF-8 text";
       else before = loaded.blobs.get(object.id) ?? "";

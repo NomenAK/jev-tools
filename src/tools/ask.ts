@@ -7,6 +7,11 @@ import { collectAskRepository, repositoryPath } from "../adapters/ask-proof.ts";
 import { collectProofSyntax } from "../adapters/ask-syntax.ts";
 import { canonicalPath } from "../adapters/canonical-path.ts";
 import { captureCommand } from "../adapters/command.ts";
+import {
+  type EvidenceContext,
+  resolveEvidenceContext,
+  withEvidenceContext,
+} from "../adapters/evidence-context.ts";
 import { collectFiles } from "../adapters/files.ts";
 import { shareGitInventory } from "../adapters/git-inventory.ts";
 import { hostUsage } from "../adapters/usage.ts";
@@ -21,6 +26,7 @@ import {
   STATE_MAX_CHARS,
 } from "../constants.ts";
 import { buildAskClosure } from "../core/ask-closure.ts";
+import type { ReferenceResolution } from "../core/ask-references.ts";
 import {
   blockedAskReadings,
   resolveAskReferences,
@@ -32,26 +38,57 @@ import {
   type ImportSource,
 } from "../core/imports.ts";
 import { checkIntegrity } from "../core/integrity.ts";
-import type { BudgetRefusal, EnvelopeInput } from "../core/output.ts";
+import type {
+  AnswerInput,
+  BudgetRefusal,
+  EnvelopeInput,
+} from "../core/output.ts";
 import { buildEnvelope } from "../core/output.ts";
+import {
+  type Action,
+  answerItemFromInput,
+  buildResultReport,
+  type Cause,
+  type Context,
+  contextFromEvidence,
+  type Diagnostic,
+  type Item,
+  known,
+  notApplicable,
+  type ResultReportV1,
+  unknown,
+} from "../core/result-report.ts";
 import { assembleState } from "../core/state.ts";
 import { discoverTests } from "../core/test-discovery.ts";
 import { describeAsk } from "../describe.ts";
 import type { GuideContext } from "../guide.ts";
 import type { Judgment } from "../jev/types.ts";
-import { renderEnvelope } from "../render.ts";
+import { renderResultReport } from "../render.ts";
 import { isRecord } from "../result.ts";
 import type { ToolDependencies } from "../runtime.ts";
 import { COMMAND_LIMIT_NOTICE } from "../texts/ask.ts";
 import { NOT_CONFIGURED } from "../texts/configuration.ts";
+import { ASK_GUIDELINE } from "../texts/instructions.ts";
 import { asksParameter } from "./ask-schema.ts";
+
+interface AskEvidenceFacts {
+  references?: ReferenceResolution;
+  omissions: {
+    reference: string;
+    reason: string;
+    origin?: string;
+    scope?: string;
+    required?: boolean;
+  }[];
+  blockedGroups: { ids: string[]; reason: string }[];
+  inventory: string[];
+}
 
 export const askParameters = Type.Object(
   {
+    root: Type.Optional(Type.String()),
     state: Type.Optional(Type.String({ maxLength: ASK_NOTE_MAX_CHARS })),
-    paths: Type.Optional(
-      Type.Array(Type.String({ minLength: 1 }), { maxItems: ASK_MAX_FILES }),
-    ),
+    paths: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
     base: Type.Optional(Type.String({ minLength: 1 })),
     command: Type.Optional(Type.String({ minLength: 1 })),
     timeout_s: Type.Optional(
@@ -89,9 +126,7 @@ export function createAskTool(dependencies: ToolDependencies) {
       : {
           promptSnippet:
             "Typed answers about one situation built from a note, files and a command's output",
-          promptGuidelines: [
-            "jev_ask: before you conclude that a failure is a bug in the code, a wrong test or the environment, or that a plan matches the docs, pass the files to jev_ask and weigh its answer against your own reading",
-          ],
+          promptGuidelines: [ASK_GUIDELINE],
         }),
     async execute(
       _id: string,
@@ -101,7 +136,11 @@ export function createAskTool(dependencies: ToolDependencies) {
       ctx: { cwd: string } & GuideContext,
     ): Promise<{
       content: { type: "text"; text: string }[];
-      details: Judgment;
+      details: Judgment & {
+        result: ResultReportV1;
+        evidenceContext: EvidenceContext;
+        evidenceFacts: AskEvidenceFacts;
+      };
       usage?: {
         input: number;
         output: number;
@@ -118,8 +157,46 @@ export function createAskTool(dependencies: ToolDependencies) {
       };
     }> {
       const client = dependencies.client;
-      const cwd = await canonicalPath(ctx.cwd);
+      const evidence = await resolveEvidenceContext(ctx.cwd, args.root, {
+        exec: execute,
+        signal,
+        origin: dependencies.evidenceOrigin,
+      });
+      const evidenceContext = evidence.context;
+      const cwd = evidence.ok ? evidence.cwd : evidenceContext.authority.path;
       const started = performance.now();
+      const evidenceFacts: AskEvidenceFacts = {
+        omissions: [],
+        blockedGroups: [],
+        inventory: [],
+      };
+      evidenceContext.requestedBase = args.base;
+      const asks = compileAsks(args.asks, { surface: "ask" });
+      let commandContext: Context["command"] = args.command
+        ? {
+            execution: "not_started",
+            cwd: evidence.ok
+              ? known(cwd)
+              : unknown("effective root not established"),
+            exitCode: unknown("command not started"),
+            timedOut: unknown("command not started"),
+          }
+        : {
+            execution: "not_requested",
+            cwd: notApplicable("no command"),
+            exitCode: notApplicable("no command"),
+            timedOut: notApplicable("no command"),
+          };
+      let refusalCause: Cause = "invalid_arguments";
+      let inventoryCollected = false;
+      const auxiliary = {
+        controls: { fresh: 0, cache: 0, notJudged: 0, static: 0 },
+        passages: { fresh: 0, cache: 0, notJudged: 0 },
+      };
+      const attributionAnswers: Record<string, AnswerInput["reportControls"]> =
+        {};
+      const attributionMissing = new Set<string>();
+      const findResults: Judgment[] = [];
       const exec = shareGitInventory(execute);
       const finish = (
         result: Judgment,
@@ -137,15 +214,324 @@ export function createAskTool(dependencies: ToolDependencies) {
           },
         });
         runtime.session.record(envelope);
+        const diagnostics: Diagnostic[] = [];
+        const actions: Action[] = [];
+        const globalMissing = new Map<
+          string,
+          { diagnosticIds: string[]; actionIds: string[] }
+        >();
+        const diagnose = (
+          cause: Cause,
+          fact: string,
+          scope: Diagnostic["scope"],
+          target: string | undefined,
+          origin: Diagnostic["origin"],
+          effect: Diagnostic["effect"] = "blocking",
+          next?: string,
+        ) => {
+          const id = `diagnostic:${diagnostics.length}`;
+          const actionId = `action:${actions.length}`;
+          const code =
+            cause === "invalid_root" || cause === "invalid_base"
+              ? "correct_context"
+              : cause === "forbidden_path"
+                ? "correct_reference"
+                : cause === "missing_required" || cause === "empty_required"
+                  ? "provide_evidence"
+                  : cause === "not_configured"
+                    ? "configure_client"
+                    : "inspect_native";
+          actions.push({
+            id: actionId,
+            code,
+            target:
+              target === undefined
+                ? unknown("target not established")
+                : known(target),
+            scope,
+            condition:
+              "Only if materially new evidence or corrected context is available",
+            instruction:
+              next ??
+              (code === "provide_evidence"
+                ? `Provide the actually missing evidence${target ? `: ${target}` : ""}; do not repeat an already captured command.`
+                : "Inspect the supplied evidence natively; correct the named cause before any useful new Jev call."),
+            repeatUnchanged: false,
+          });
+          diagnostics.push({
+            id,
+            cause,
+            fact,
+            target:
+              target === undefined
+                ? unknown("target not established")
+                : known(target),
+            origin,
+            scope,
+            effect,
+            material: true,
+            omittedMembers: [],
+            memberCount: known(0),
+            actionIds: [actionId],
+          });
+          return { diagnosticIds: [id], actionIds: [actionId] };
+        };
+        const items: Item[] = asks.ok
+          ? asks.readings.map((reading, index) => {
+              const groupId = `group:${asks.groups.findIndex((group) => group.includes(reading.id))}`;
+              const target = asks.asks[reading.askIndex]?.about ?? "state";
+              const pieces: Item["evidence"] = [
+                {
+                  target,
+                  canonicalPath: unknown(
+                    "selector does not establish a canonical file identity",
+                  ),
+                  aliases: [],
+                  side: target === "output" ? "output" : "state",
+                  revision: notApplicable("non-file evidence"),
+                },
+              ];
+              for (const [alias, path] of Object.entries(
+                evidenceFacts.references?.aliases ?? {},
+              )) {
+                const before =
+                  evidenceFacts.references?.additions.some(
+                    (addition) =>
+                      addition.reference === alias &&
+                      addition.side === "files_before",
+                  ) || target.includes("files_before");
+                pieces.push({
+                  target: alias,
+                  canonicalPath: evidenceContext.effectiveRoot
+                    ? known(resolve(evidenceContext.effectiveRoot.path, path))
+                    : unknown("effective root unavailable"),
+                  aliases: [alias],
+                  side: before ? "before" : "current",
+                  revision:
+                    before && evidenceContext.resolvedBase
+                      ? known(evidenceContext.resolvedBase)
+                      : unknown("working tree evidence"),
+                });
+              }
+              const common = {
+                id: reading.id,
+                kind:
+                  reading.kind === "verify"
+                    ? ("claim" as const)
+                    : ("question" as const),
+                label: reading.label,
+                groupId,
+                evidence: pieces,
+                diagnosticIds: [] as string[],
+                actionIds: [] as string[],
+              };
+              const originalAnswer = input.answers?.[index];
+              const attributionControls = attributionAnswers[reading.id];
+              const answer =
+                originalAnswer && attributionMissing.has(reading.id)
+                  ? {
+                      ...originalAnswer,
+                      unjudged: true,
+                      reason: "Required attribution control is incomplete",
+                    }
+                  : originalAnswer && attributionControls
+                    ? {
+                        ...originalAnswer,
+                        reportControls: [
+                          ...(originalAnswer.reportControls ?? []),
+                          ...attributionControls,
+                        ],
+                      }
+                    : originalAnswer;
+              if (
+                answer &&
+                !answer.unjudged &&
+                (answer.source || answer.answer?.source)
+              )
+                return answerItemFromInput(
+                  common,
+                  input.controls?.length
+                    ? {
+                        ...answer,
+                        band: "unsure",
+                        reason: input.controls
+                          .map((control) => control.fact)
+                          .join("; "),
+                      }
+                    : answer,
+                );
+              const blocked = evidenceFacts.blockedGroups.find((group) =>
+                group.ids.includes(reading.id),
+              );
+              const omission = evidenceFacts.omissions.find(
+                (item) =>
+                  item.required &&
+                  (item.origin === "note" || item.scope === reading.id),
+              );
+              const groupFailure = result.ok
+                ? (
+                    asks.groups.find((group) => group.includes(reading.id)) ??
+                    []
+                  )
+                    .map((id) => result.answers[id])
+                    .find(
+                      (answer) => answer?.type === "unjudged" && answer.cause,
+                    )
+                : undefined;
+              const cause = blocked
+                ? "missing_required"
+                : groupFailure?.type === "unjudged" && groupFailure.cause
+                  ? groupFailure.cause
+                  : input.budget
+                    ? input.budget.kind === "session"
+                      ? "session_budget"
+                      : "call_budget"
+                    : (result.failureCause ??
+                      (input.refusal ? refusalCause : "control_failure"));
+              const globalKey =
+                omission?.origin === "note" ? omission.reference : undefined;
+              const existingLinks = globalKey
+                ? globalMissing.get(globalKey)
+                : undefined;
+              const links =
+                existingLinks ??
+                diagnose(
+                  cause,
+                  blocked?.reason ??
+                    answer?.reason ??
+                    (result.ok
+                      ? "Required judgment group incomplete or response provenance not established"
+                      : result.error),
+                  omission?.origin === "note"
+                    ? { kind: "call" }
+                    : { kind: "group", groupIds: [groupId] },
+                  omission?.reference,
+                  omission?.origin === "note"
+                    ? "note"
+                    : blocked
+                      ? "ask"
+                      : input.budget
+                        ? "budget"
+                        : "provider",
+                );
+              if (globalKey) globalMissing.set(globalKey, links);
+              return {
+                ...common,
+                ...links,
+                treatment: "not_judged",
+                source: "none",
+              };
+            })
+          : [];
+        if (!items.length)
+          diagnose(
+            input.refusal ? refusalCause : "collection_empty",
+            input.refusal ?? "No requested results collected",
+            { kind: "call" },
+            undefined,
+            "input",
+          );
+        for (const control of input.controls ?? [])
+          diagnose(
+            "control_failure",
+            control.fact,
+            { kind: "call" },
+            undefined,
+            "control",
+            "reservation",
+            control.next,
+          );
+        for (const limitation of input.limitations ?? [])
+          diagnose(
+            "evidence_limit",
+            limitation.fact,
+            { kind: "call" },
+            limitation.path,
+            "closure",
+            "reservation",
+            limitation.next,
+          );
+        const report = buildResultReport({
+          tool: "jev_ask",
+          context: contextFromEvidence(evidenceContext, {
+            command: commandContext,
+            inventories: inventoryCollected
+              ? [
+                  {
+                    id: "repository",
+                    kind: "repository",
+                    rules: ["Git tracked and admitted repository evidence"],
+                    restrictions: args.paths ?? [],
+                    discovered: known(evidenceFacts.inventory.length),
+                    considered: known(evidenceFacts.inventory.length),
+                    scopeRestricted: false,
+                    criteria: [],
+                  },
+                ]
+              : [],
+          }),
+          items,
+          diagnostics,
+          actions,
+          metrics: {
+            calls: result.calls ?? 0,
+            questions: result.questions ?? 0,
+            cacheHits: result.cacheHits ?? 0,
+            cacheRequests: result.cacheRequests ?? 0,
+            costUsd: result.usage?.costUsd,
+            elapsedMs: performance.now() - started,
+          },
+          auxiliary,
+          total: known(items.length),
+          refused:
+            !!input.refusal &&
+            refusalCause !== "not_configured" &&
+            !result.failureCause,
+        });
         runtime.guide.deliver(ctx);
         return {
-          content: [{ type: "text" as const, text: renderEnvelope(envelope) }],
-          details: result,
+          content: [
+            {
+              type: "text" as const,
+              text: renderResultReport(report, { details: envelope }),
+            },
+          ],
+          details: {
+            ...result,
+            result: report,
+            evidenceContext,
+            evidenceFacts,
+          },
         };
       };
-      const textResult = (text: string) =>
-        finish({ ok: false, error: text }, { refusal: text });
-      if (!client) return textResult(NOT_CONFIGURED);
+      const textResult = (text: string, cause: Cause = "invalid_arguments") => {
+        refusalCause = cause;
+        const technical = findResults.reduce(
+          (totals, judgment) => ({
+            calls: totals.calls + (judgment.calls ?? 0),
+            questions: totals.questions + (judgment.questions ?? 0),
+            cacheHits: totals.cacheHits + (judgment.cacheHits ?? 0),
+            cacheRequests: totals.cacheRequests + (judgment.cacheRequests ?? 0),
+          }),
+          { calls: 0, questions: 0, cacheHits: 0, cacheRequests: 0 },
+        );
+        return finish(
+          { ok: false, error: text, ...technical },
+          { refusal: text },
+        );
+      };
+      if (!evidence.ok)
+        return textResult(evidence.error, evidence.cause ?? "invalid_root");
+      if (!asks.ok) return textResult(asks.error);
+      const preliminary = resolveAskReferences(asks, args.state, {}, []);
+      if (preliminary.invalid.length) {
+        evidenceFacts.references = preliminary;
+        return textResult(
+          preliminary.invalid.map((item) => item.reason).join("; "),
+          "forbidden_path",
+        );
+      }
+      if (!client) return textResult(NOT_CONFIGURED, "not_configured");
       if (args.command && !allowCommand)
         return textResult("command disabled by JEV_TOOLS_ALLOW_COMMAND=0");
       if (
@@ -159,21 +545,23 @@ export function createAskTool(dependencies: ToolDependencies) {
         );
       if (args.state === undefined && !args.paths?.length && !args.command)
         return textResult("Provide state, command or at least one path.");
-      const asks = compileAsks(args.asks, { surface: "ask" });
-      if (!asks.ok) return textResult(asks.error);
       const files = await collectFiles(cwd, args.paths ?? [], signal, {
         exec,
         allowEmpty: true,
         skipInvalidUtf8: true,
       });
-      if (!files.ok) return textResult(files.error);
+      if (!files.ok)
+        return textResult(files.error, files.cause ?? "file_unavailable");
       if (
         !Object.keys(files.files).length &&
         args.state === undefined &&
         !args.command &&
         files.skipped.length
       )
-        return textResult(`No readable evidence: ${files.skipped.join("; ")}`);
+        return textResult(
+          `No readable evidence: ${files.skipped.join("; ")}`,
+          "collection_empty",
+        );
       const proofLimitations: Array<
         NonNullable<EnvelopeInput["limitations"]>[number]
       > = files.skipped.map((fact) => ({
@@ -181,12 +569,24 @@ export function createAskTool(dependencies: ToolDependencies) {
         next: "Provide this file as UTF-8 text if the judgment needs it.",
       }));
       let repository = await collectAskRepository(exec, cwd, args.base, signal);
-      if (!repository.ok && args.base) return textResult(repository.error);
+      inventoryCollected = repository.ok;
+      if (repository.ok) {
+        evidenceFacts.inventory = [...repository.known];
+        evidenceContext.resolvedBase = repository.baseSha;
+      }
+      if (!repository.ok && args.base)
+        return textResult(repository.error, "invalid_base");
       if (!repository.ok)
         proofLimitations.push({
           fact: `closure unavailable: ${repository.error}`,
           next: "pass dependencies explicitly in paths",
         });
+      if (args.command)
+        commandContext = {
+          ...commandContext,
+          execution: "started",
+          cwd: known(repository.ok ? repository.root : cwd),
+        };
       const command = args.command
         ? await captureCommand(
             exec,
@@ -196,16 +596,47 @@ export function createAskTool(dependencies: ToolDependencies) {
             signal,
           )
         : undefined;
-      if (command && !command.ok) return textResult(command.error);
+      if (command?.ok)
+        commandContext = {
+          execution: "finished",
+          cwd: known(repository.ok ? repository.root : cwd),
+          exitCode: known(command.output.exit_code),
+          timedOut: known(command.output.timed_out),
+        };
+      if (command && !command.ok) {
+        commandContext = {
+          // Normatif ResultReportV1 (#189 addendum) : not_requested /
+          // not_started / started / finished. Un spawn sans complétion
+          // observée (commandExecution "unknown" de l'adapter) est démarré,
+          // pas non-démarré : mapper vers "started", exitCode/timedOut
+          // unknown. Schéma C inchangé (unknown = valeur morte inémise).
+          execution:
+            command.commandExecution === "unknown"
+              ? "started"
+              : command.commandExecution,
+          cwd: known(repository.ok ? repository.root : cwd),
+          exitCode:
+            command.commandExitCode !== undefined
+              ? known(command.commandExitCode)
+              : unknown("command completion not observed"),
+          timedOut:
+            command.commandTimedOut !== undefined
+              ? known(command.commandTimedOut)
+              : unknown("command completion not observed"),
+        };
+        return textResult(command.error, command.cause ?? "file_unavailable");
+      }
       if (command?.ok) {
         repository = await collectAskRepository(exec, cwd, args.base, signal);
-        if (!repository.ok && args.base) return textResult(repository.error);
+        if (!repository.ok && args.base)
+          return textResult(repository.error, "invalid_base");
       }
       const initialState = assembleState(args.state, files.files);
       if (!initialState.ok) return textResult(initialState.error);
       if (command?.ok && Object.hasOwn(initialState.state, "output"))
         return textResult(
           "state contains reserved key output when command is supplied; rename it in your note",
+          "reserved_key",
         );
       let outputNotIdentifiable = false;
       if (command?.ok && repository.ok) {
@@ -309,36 +740,67 @@ export function createAskTool(dependencies: ToolDependencies) {
       const references = resolveAskReferences(
         asks,
         args.state,
-        files.files,
+        repository.ok
+          ? {
+              files: Object.fromEntries(
+                Object.entries(files.files).map(([path, text]) => [
+                  repositoryPath(repository.root, cwd, path),
+                  text,
+                ]),
+              ),
+              beforeInventory: args.base ? [...repository.beforeKnown] : [],
+            }
+          : files.files,
         repository?.ok ? [...repository.known] : [],
       );
+      evidenceFacts.references = references;
+      evidenceFacts.inventory = repository.ok ? [...repository.known] : [];
+      if (references.invalid.length)
+        return textResult(
+          references.invalid.map((item) => item.reason).join("; "),
+          "forbidden_path",
+        );
       const unresolved = [...references.unresolved];
+      const historical: Record<string, string | null> = {};
+      if (repository.ok && args.base) {
+        for (const reference of references.additions.filter(
+          (reference) =>
+            reference.side === "files_before" && reference.required,
+        )) {
+          const before = await repository.readBefore(reference.path);
+          if (before.ok) historical[reference.path] = before.text;
+          else {
+            if (before.cause === "forbidden_path")
+              return textResult(before.error, before.cause);
+            unresolved.push({ ...reference, reason: before.error });
+          }
+        }
+      }
       if (repository?.ok) {
         const root = repository.root;
         const additions = await Promise.all(
-          references.additions.map(async (addition) => ({
-            addition,
-            added: await collectFiles(root, [addition.path], signal, {
-              allowEmpty: true,
-              exec,
-              inventory: repository.known,
-            }),
-          })),
+          references.additions
+            .filter((addition) => addition.side !== "files_before")
+            .map(async (addition) => ({
+              addition,
+              added: await collectFiles(root, [addition.path], signal, {
+                allowEmpty: true,
+                exec,
+                inventory: repository.known,
+              }),
+            })),
         );
         for (const { addition, added } of additions) {
           if (added.ok) {
-            files.files[addition.reference] = added.files[addition.path] ?? "";
+            const local = repositoryPath(cwd, root, addition.path);
+            files.files[local] = added.files[addition.path] ?? "";
             files.identities.push(
               ...added.identities.map((identity) => ({
                 ...identity,
-                requestedPath: addition.reference,
+                requestedPath: local,
               })),
             );
-          } else
-            unresolved.push({
-              reference: addition.reference,
-              reason: added.error,
-            });
+          } else unresolved.push({ ...addition, reason: added.error });
         }
       }
       const state = assembleState(args.state, files.files);
@@ -346,44 +808,58 @@ export function createAskTool(dependencies: ToolDependencies) {
       if (command?.ok && Object.hasOwn(state.state, "output"))
         return textResult(
           "state contains reserved key output when command is supplied; rename it in your note",
+          "reserved_key",
         );
       if (command?.ok) state.state.output = { ...command.output };
       if (repository?.ok) {
+        if (evidenceContext.effectiveRoot)
+          evidenceContext.effectiveRoot.path = repository.root;
+        evidenceContext.requestedBase = args.base;
+        evidenceContext.resolvedBase = repository.baseSha;
         const canonical = Object.fromEntries(
           Object.entries(files.files).map(([path, text]) => [
             repositoryPath(repository.root, cwd, path),
             text,
           ]),
         );
-        for (const addition of references.additions)
-          canonical[addition.path] = files.files[addition.reference] ?? "";
+        state.state.files = canonical;
+        state.state.evidence = {
+          context: evidenceContext,
+          aliases: Object.fromEntries(
+            Object.entries(references.aliases)
+              .map(([alias, path]): [string, string] => [
+                alias,
+                repository.known.has(path) || repository.beforeKnown.has(path)
+                  ? path
+                  : repositoryPath(repository.root, cwd, path),
+              ])
+              .sort(([a], [b]) => a.localeCompare(b)),
+          ),
+        };
+        // Canonical repository paths are the sole serialized content keys.
         const sources: ImportSource[] = Object.entries(canonical).map(
           ([path, text]) => ({ path, text }),
         );
-        const before: Record<string, string | null> = {};
+        const before: Record<string, string | null> = { ...historical };
         if (args.base) {
           for (const path of Object.keys(canonical)) {
             const old = await repository.readBefore(path);
-            if (!old.ok) return textResult(old.error);
+            if (!old.ok)
+              return textResult(old.error, old.cause ?? "file_unavailable");
             before[path] = old.text;
           }
           state.state.base_sha = repository.baseSha ?? "";
-          state.state.files_before = Object.fromEntries(
-            Object.keys(files.files).map((path) => {
-              const canonicalPath =
-                references.additions.find(
-                  (addition) => addition.reference === path,
-                )?.path ?? repositoryPath(repository.root, cwd, path);
-              return [path, before[canonicalPath] ?? null];
-            }),
-          );
-          const stateSize = JSON.stringify(state.state).length;
+          state.state.files_before = before;
+          const stateSize = JSON.stringify(
+            command?.ok ? { ...state.state, output: undefined } : state.state,
+          ).length;
           if (stateSize > STATE_MAX_CHARS) {
             const partSizes = Object.entries(state.state)
               .map(([part, value]) => `${part} ${JSON.stringify(value).length}`)
               .join(", ");
             return textResult(
               `serialized state including files_before exceeds ${STATE_MAX_CHARS} chars (${stateSize}); serialized parts: ${partSizes}; split the situation into smaller states.`,
+              "evidence_too_large",
             );
           }
         }
@@ -483,14 +959,17 @@ export function createAskTool(dependencies: ToolDependencies) {
           sources,
           ...(args.base ? { before } : {}),
         };
+        const closureState = { ...state.state };
+        if (command?.ok) delete closureState.output;
         const closure = buildAskClosure({
           graph: { edges, limits },
           syntax,
           paths: Object.keys(canonical),
           intentions: JSON.stringify(asks.asks),
-          state: state.state,
+          state: closureState,
         });
         state.state = closure.state;
+        if (command?.ok) state.state.output = { ...command.output };
         proofLimitations.push(
           ...closure.limitations.filter(
             (limit) => !limit.fact.startsWith("Import closure only,"),
@@ -505,6 +984,22 @@ export function createAskTool(dependencies: ToolDependencies) {
           fact: "closure: +0; imports only, depth 1; repository inventory unavailable",
           next: "pass dependencies explicitly in paths",
         });
+      if (!repository.ok)
+        state.state.evidence = {
+          context: evidenceContext,
+          aliases: references.aliases,
+        };
+      // Command output has its own passage-selection budget below. Only immutable
+      // file/note evidence can refuse here, before selection has had a chance.
+      const serializedSize = JSON.stringify(
+        command?.ok ? { ...state.state, output: undefined } : state.state,
+      ).length;
+      if (serializedSize > STATE_MAX_CHARS)
+        return textResult(
+          `serialized state exceeds ${STATE_MAX_CHARS} chars (${serializedSize}); files and versions are never truncated`,
+          "evidence_too_large",
+        );
+      evidenceFacts.omissions = unresolved;
       const blocked = blockedAskReadings(
         asks,
         state.state,
@@ -513,13 +1008,16 @@ export function createAskTool(dependencies: ToolDependencies) {
       );
       const inserted = isRecord(state.state.files) ? state.state.files : {};
       const identities = files.identities.map((file) => {
-        const content = inserted[file.requestedPath];
-        const insertedPath = Object.keys(inserted).find(
-          (path) => resolve(cwd, path) === file.resolvedPath,
-        );
+        const insertedPath = repository.ok
+          ? repositoryPath(repository.root, cwd, file.requestedPath)
+          : file.requestedPath;
+        const content = inserted[insertedPath];
         return {
           ...file,
-          insertedPath: insertedPath ? resolve(cwd, insertedPath) : "",
+          insertedPath: resolve(
+            repository.ok ? repository.root : cwd,
+            insertedPath,
+          ),
           content: typeof content === "string" ? content : "",
           insertedSha256: createHash("sha256")
             .update(typeof content === "string" ? content : "")
@@ -531,6 +1029,16 @@ export function createAskTool(dependencies: ToolDependencies) {
           .filter((group) => group.some((id) => blocked.has(id)))
           .flat(),
       );
+      evidenceFacts.blockedGroups = asks.groups
+        .filter((group) => group.some((id) => blocked.has(id)))
+        .map((ids) => ({
+          ids,
+          reason:
+            ids
+              .map((id) => blocked.get(id))
+              .find((reason) => reason !== undefined) ??
+            "Required evidence unavailable",
+        }));
       const questions = Object.fromEntries(
         Object.entries(asks.questions).filter(
           ([id]) => !blockedMembers.has(id),
@@ -543,11 +1051,14 @@ export function createAskTool(dependencies: ToolDependencies) {
       );
       let sent = 0;
       let refusal: BudgetRefusal | undefined;
-      const findResults: Judgment[] = [];
       const options = {
         signal,
         cache: !args.command,
         ...runtime.session.requestGate(),
+        admissionCause: () =>
+          refusal?.kind === "session"
+            ? ("session_budget" as const)
+            : ("call_budget" as const),
         beforeRequest: (questionCount: number) => {
           if (args.max_calls !== undefined && sent >= args.max_calls) {
             refusal = {
@@ -582,11 +1093,25 @@ export function createAskTool(dependencies: ToolDependencies) {
           )
             return textResult(
               `output requires more than ${OUTPUT_FIND_MAX_CALLS} find calls: ${command.originalBytes} bytes before, ${command.compressedChars} chars after compression; narrow command (remove verbosity or filter)`,
+              "evidence_too_large",
+            );
+          const chunkStates = chunks.map((chunk) =>
+            withEvidenceContext({ output: chunk.text }, evidenceContext),
+          );
+          if (
+            chunkStates.some(
+              (chunkState) =>
+                JSON.stringify(chunkState).length > STATE_MAX_CHARS,
+            )
+          )
+            return textResult(
+              `serialized output chunk including evidence context exceeds ${STATE_MAX_CHARS} chars; narrow command`,
+              "evidence_too_large",
             );
           const found = await Promise.all(
-            chunks.map(async (chunk) => {
+            chunkStates.map(async (chunkState) => {
               const judgment = await client.judge(
-                { output: chunk.text },
+                chunkState,
                 {
                   find: {
                     type: "bool",
@@ -620,6 +1145,7 @@ export function createAskTool(dependencies: ToolDependencies) {
           if (budget < 100)
             return textResult(
               "No space for command output; reduce paths or state.",
+              "evidence_too_large",
             );
           const stderrSize = JSON.stringify(output.stderr).length;
           const stdoutSize = JSON.stringify(output.stdout).length;
@@ -682,6 +1208,7 @@ export function createAskTool(dependencies: ToolDependencies) {
         if (JSON.stringify(state.state).length > STATE_MAX_CHARS)
           return textResult(
             "serialized command output exceeds state budget; narrow command or reduce paths",
+            "evidence_too_large",
           );
         if (outputNotIdentifiable)
           integrity.controls.push({
@@ -734,13 +1261,14 @@ export function createAskTool(dependencies: ToolDependencies) {
             cacheHits: (first.cacheHits ?? 0) + (reversed.cacheHits ?? 0),
             cacheRequests:
               (first.cacheRequests ?? 0) + (reversed.cacheRequests ?? 0),
-            usage: {
-              inputTokens:
-                (first.usage?.inputTokens ?? 0) +
-                (reversed.usage?.inputTokens ?? 0),
-              costUsd:
-                (first.usage?.costUsd ?? 0) + (reversed.usage?.costUsd ?? 0),
-            },
+            usage:
+              first.usage && reversed.usage
+                ? {
+                    inputTokens:
+                      first.usage.inputTokens + reversed.usage.inputTokens,
+                    costUsd: first.usage.costUsd + reversed.usage.costUsd,
+                  }
+                : undefined,
           };
         }
       }
@@ -749,12 +1277,17 @@ export function createAskTool(dependencies: ToolDependencies) {
           ...result,
           calls: (result.calls ?? 0) + (found.calls ?? 0),
           questions: (result.questions ?? 0) + (found.questions ?? 0),
-          usage: {
-            inputTokens:
-              (result.usage?.inputTokens ?? 0) +
-              (found.usage?.inputTokens ?? 0),
-            costUsd: (result.usage?.costUsd ?? 0) + (found.usage?.costUsd ?? 0),
-          },
+          cacheHits: (result.cacheHits ?? 0) + (found.cacheHits ?? 0),
+          cacheRequests:
+            (result.cacheRequests ?? 0) + (found.cacheRequests ?? 0),
+          usage:
+            result.usage && found.usage
+              ? {
+                  inputTokens:
+                    result.usage.inputTokens + found.usage.inputTokens,
+                  costUsd: result.usage.costUsd + found.usage.costUsd,
+                }
+              : undefined,
         };
       const attribution: Array<
         NonNullable<EnvelopeInput["limitations"]>[number]
@@ -779,6 +1312,8 @@ export function createAskTool(dependencies: ToolDependencies) {
               fact: `attribution ${reading.label}: no designated candidate`,
               next: "provide decisive candidate evidence before acting",
             });
+            attributionMissing.add(reading.id);
+            auxiliary.controls.notJudged++;
             continue;
           }
           if (!Object.hasOwn(inserted, selected)) {
@@ -786,6 +1321,8 @@ export function createAskTool(dependencies: ToolDependencies) {
               fact: `attribution ${reading.label}: designated piece ${selected} is absent`,
               next: `add ${selected} to paths before acting`,
             });
+            attributionMissing.add(reading.id);
+            auxiliary.controls.notJudged++;
             continue;
           }
           const selectedPath = repository?.ok
@@ -834,6 +1371,40 @@ export function createAskTool(dependencies: ToolDependencies) {
             options,
           );
           const answer = control.ok ? control.answers[reading.id] : undefined;
+          if (answer && answer.type !== "unjudged" && answer.source)
+            attributionAnswers[reading.id] = [
+              {
+                id: `${reading.id}:attribution`,
+                kind: "attribution",
+                source: answer.source,
+                outcome:
+                  answer.type === "choice"
+                    ? answer.choice === selected
+                      ? "does not rest on it"
+                      : "attributed"
+                    : "invalid attribution response",
+                rawValues:
+                  answer.type === "bool"
+                    ? [
+                        {
+                          label: "attribution",
+                          value: answer.p >= 0.5,
+                          probability: known(answer.p),
+                        },
+                      ]
+                    : Object.entries(answer.probabilities).map(
+                        ([label, value]) => ({
+                          label,
+                          value: label,
+                          probability: known(value),
+                        }),
+                      ),
+              },
+            ];
+          if (answer?.type !== "choice") attributionMissing.add(reading.id);
+          if (answer && answer.type !== "unjudged" && answer.source)
+            auxiliary.controls[answer.source]++;
+          else auxiliary.controls.notJudged++;
           attribution.push(
             answer?.type === "choice"
               ? {
@@ -852,13 +1423,14 @@ export function createAskTool(dependencies: ToolDependencies) {
             cacheHits: (result.cacheHits ?? 0) + (control.cacheHits ?? 0),
             cacheRequests:
               (result.cacheRequests ?? 0) + (control.cacheRequests ?? 0),
-            usage: {
-              inputTokens:
-                (result.usage?.inputTokens ?? 0) +
-                (control.usage?.inputTokens ?? 0),
-              costUsd:
-                (result.usage?.costUsd ?? 0) + (control.usage?.costUsd ?? 0),
-            },
+            usage:
+              result.usage && control.usage
+                ? {
+                    inputTokens:
+                      result.usage.inputTokens + control.usage.inputTokens,
+                    costUsd: result.usage.costUsd + control.usage.costUsd,
+                  }
+                : undefined,
           };
         }
       }
@@ -877,6 +1449,32 @@ export function createAskTool(dependencies: ToolDependencies) {
             (reversed?.ok && reversed.answers[reading.id]?.type === "unjudged"),
         )
         .map((reading) => reading.label);
+      for (const reading of asks.readings) {
+        for (const id of [
+          reading.twin,
+          ...Object.values(reading.controls ?? {}),
+        ].filter((id): id is string => !!id)) {
+          const answer = result.ok ? result.answers[id] : undefined;
+          if (answer && answer.type !== "unjudged" && answer.source)
+            auxiliary.controls[answer.source]++;
+          else auxiliary.controls.notJudged++;
+        }
+        if (
+          reversed &&
+          Object.hasOwn(reversed.ok ? reversed.answers : {}, reading.id)
+        ) {
+          const answer = reversed.ok ? reversed.answers[reading.id] : undefined;
+          if (answer && answer.type !== "unjudged" && answer.source)
+            auxiliary.controls[answer.source]++;
+          else auxiliary.controls.notJudged++;
+        }
+      }
+      for (const found of findResults) {
+        const answer = found.ok ? found.answers.find : undefined;
+        if (answer && answer.type !== "unjudged" && answer.source)
+          auxiliary.passages[answer.source]++;
+        else auxiliary.passages.notJudged++;
+      }
       const output = finish(result, {
         ...(result.ok
           ? {

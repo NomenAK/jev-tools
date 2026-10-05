@@ -76,14 +76,21 @@ async function fixture(t: TestContext) {
   };
 }
 
-async function judge(client: JevClient | undefined) {
+async function judge(
+  client: JevClient | undefined,
+  source: "fresh" | "cache" = "fresh",
+) {
   assert.ok(client);
   const result = await client.judge(
     { greeting: "hello" },
     { q: { type: "bool", instructions: "Is this a greeting?" } },
   );
   assert.equal(result.ok, true);
-  assert.deepEqual(result.answers.q, { type: "bool", p: 0.93 });
+  assert.deepEqual(result.answers.q, {
+    type: "bool",
+    p: 0.93,
+    source,
+  });
   return result;
 }
 
@@ -250,7 +257,7 @@ test("changing configuration immediately swaps clients and clears the old client
   );
   const oldClient = controller.client;
   await judge(oldClient);
-  assert.equal((await judge(oldClient)).cacheHits, 1);
+  assert.equal((await judge(oldClient, "cache")).cacheHits, 1);
   assert.equal(f.requests.length, 1);
   await controller.apply(
     { url: f.url, apiKey: "second-key", model: "second-model" },
@@ -380,7 +387,7 @@ test("failed save keeps the old credentials, client and cached results intact", 
     /private/,
   );
   assert.equal(controller.client, oldClient);
-  assert.equal((await judge(controller.client)).cacheHits, 1);
+  assert.equal((await judge(controller.client, "cache")).cacheHits, 1);
   assert.equal(f.requests.length, 1);
   assert.deepEqual(controller.values(), original);
   assert.equal(

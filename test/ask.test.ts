@@ -46,15 +46,17 @@ const judgment: Judgment = {
   cacheHits: 0,
   cacheRequests: 1,
   answers: {
-    q1: { type: "bool", p: 0.98 },
+    q1: { type: "bool", source: "fresh", p: 0.98 },
     q2: {
       type: "choice",
+      source: "fresh",
       choice: "yes",
       confidence: 0.3,
       probabilities: { yes: 0.92, no: 0.08 },
     },
     q3: {
       type: "score",
+      source: "fresh",
       score: 1.8,
       confidence: 0.2,
       legend: ["low", "medium", "high"],
@@ -91,18 +93,16 @@ test("injected client judges assembled files while content hides files and confi
       undefined,
       { cwd },
     );
-    assert.deepEqual(captured, {
-      request: "review",
-      files: { "a.ts": "export const value = 1;\n" },
-    });
+    assert.equal(captured?.request, "review");
+    assert.deepEqual(captured?.files, { "a.ts": "export const value = 1;\n" });
+    assert.ok(captured?.evidence);
     const text = result.content[0]?.text ?? "";
-    assert.match(text, /free1 .* = yes \(0.98\)/);
-    assert.doesNotMatch(text, /confidence|export const value/);
-    assert.match(
-      text,
-      /1 calls · 1 questions · \$0.00006 · cache 0\/1 · \d+\.\d s$/,
-    );
-    assert.deepEqual(result.details, judgment);
+    assert.equal(result.details.result.items[0]?.treatment, "judged");
+    assert.doesNotMatch(text, /export const value/);
+    assert.equal(result.details.result.accounting.httpAttempts, 1);
+    assert.equal(result.details.result.accounting.questionsSent, 1);
+    assert.ok(result.details.ok);
+    assert.deepEqual(result.details.answers, judgment.answers);
     assert.ok("usage" in result);
     assert.equal(result.usage?.cost.total, 0.00006);
   } finally {
@@ -123,10 +123,8 @@ test("internal URLs are refused before judgment", async () => {
     undefined,
     { cwd: "." },
   );
-  assert.match(
-    result.content[0]?.text ?? "",
-    /^Internal URLs are not files; use read for agent:\/\/Main\./,
-  );
+  assert.equal(result.details.result.execution, "refused");
+  assert.equal(result.details.result.accounting.httpAttempts, 0);
 });
 
 test("reverse choice reports an unsure order-dependent result and total usage", async () => {
@@ -144,6 +142,7 @@ test("reverse choice reports an unsure order-dependent result and total usage", 
         answers: {
           q1: {
             type: "choice",
+            source: "fresh",
             choice: "a",
             confidence: 0.99,
             probabilities: {
@@ -171,10 +170,12 @@ test("reverse choice reports an unsure order-dependent result and total usage", 
     { cwd: "." },
   );
   assert.equal(calls, 2);
-  assert.match(
-    result.content[0]?.text ?? "",
-    /unsure.*a \(0\.6\).*order-dependent/,
-  );
+  const item = result.details.result.items[0];
+  assert.equal(item?.treatment, "judged");
+  if (item?.treatment === "judged") {
+    assert.equal(item.judgment.band, "unsure");
+    assert.equal(item.judgment.controls[0]?.kind, "order");
+  }
   assert.equal(result.details.calls, 2);
   assert.equal(result.details.usage?.costUsd, 0.002);
 });
@@ -190,6 +191,7 @@ test("verify missing twin remains visible alongside decide text", async () => {
         answers: {
           q1: {
             type: "choice",
+            source: "fresh",
             choice: "holds",
             confidence: 0.99,
             probabilities: {
@@ -200,9 +202,10 @@ test("verify missing twin remains visible alongside decide text", async () => {
             },
           },
           q2: { type: "unjudged", reason: "simulated missing twin" },
-          q3: { type: "bool", p: 0.98 },
+          q3: { type: "bool", source: "fresh", p: 0.98 },
           q4: {
             type: "choice",
+            source: "fresh",
             choice: "register",
             confidence: 0.99,
             probabilities: {
@@ -212,8 +215,8 @@ test("verify missing twin remains visible alongside decide text", async () => {
               cannot_tell: 0,
             },
           },
-          q5: { type: "bool", p: 0.99 },
-          q6: { type: "bool", p: 0.01 },
+          q5: { type: "bool", source: "fresh", p: 0.99 },
+          q6: { type: "bool", source: "fresh", p: 0.01 },
         },
       };
     },
@@ -242,14 +245,9 @@ test("verify missing twin remains visible alongside decide text", async () => {
     undefined,
     { cwd: "." },
   );
-  assert.match(
-    result.content[0]?.text ?? "",
-    /unsure.*c1 "The extension registers a tool".*twin unjudged: simulated missing twin; complete the state note/,
-  );
-  assert.match(
-    result.content[0]?.text ?? "",
-    /decide2 "The module registers an extension tool"/,
-  );
+  assert.equal(result.details.result.items[0]?.treatment, "not_judged");
+  assert.equal(result.details.result.items[1]?.treatment, "judged");
+  assert.equal(result.details.result.execution, "partial");
 });
 test("invalid UTF-8 is excluded visibly without suppressing other file verdicts", async () => {
   const cwd = await mkdtemp(join(homedir(), ".cache/jev-tools/ask-utf8-"));
@@ -282,9 +280,10 @@ test("invalid UTF-8 is excluded visibly without suppressing other file verdicts"
     );
     const text = result.content[0]?.text ?? "";
     assert.match(text, /latin\.txt.*not UTF-8 text/);
-    assert.match(text, /integrity ok/);
-    assert.match(text, /= yes \(0\.98\)/);
-    assert.doesNotMatch(text, /unsure.*Does ok\.txt/);
+    assert.equal(result.details.result.items[0]?.treatment, "judged");
+    const admitted = result.details.result.items[0];
+    if (admitted?.treatment === "judged")
+      assert.equal(admitted.judgment.band, "verdict");
     assert.deepEqual(observed?.files, { "ok.txt": "valid text" });
     observed = undefined;
     const excluded = await createAskTool(dependencies(client)).execute(

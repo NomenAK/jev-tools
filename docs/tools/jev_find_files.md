@@ -18,6 +18,7 @@ Deterministic lexical pre-ranking and name judgments produce candidates; the too
 
 | Field | Type / default | Meaning |
 |---|---|---|
+| `root` | Optional nonempty string | Exact initial Git root or registered worktree of the same repository; see [evidence-root admission](../../README.md#evidence-root). |
 | `goal` | Required nonempty string | Behavioral sentence with at least five content words for an unqualified entry verdict. Shorter goals are accepted but capped at unsure. |
 | `keywords` | Optional array of nonempty strings, default empty | Known identifiers or terms steering lexical ranking and excerpt selection. |
 | `scope` | Optional directory string or array of directory strings, default repository | Restrict search; an incorrect scope may yield none. |
@@ -44,7 +45,7 @@ Illustrative call with fictional repository paths, not a recorded execution:
 
 ## Results and next action
 
-`entry:` names the file to open first with its probability, followed by ranked related paths and a suggested read. `entry: unsure` can mean two plausible entries, order sensitivity, inconclusive excerpts or a short goal: read the leading two candidates. `entry: none` means no candidate fit the supplied evidence: rephrase the behavioral goal or widen scope. Paths and probabilities are not source text; read the files before editing. See [shared result reading](../../README.md#read-the-results).
+The report distinguishes the primary entry decision from auxiliary ranking and controls, retains actual fresh/cache provenance and supplies useful read actions. Unsure can mean two plausible entries, order sensitivity, inconclusive excerpts or a short goal: inspect the leading candidates. A judged `none` means no candidate fit the supplied evidence: clarify the behavioral goal or widen the relevant scope. An empty collection, exhausted budget or missing response is not a `none` judgment and carries no invented probability. Paths and probabilities are not source text; read the files before editing. See [shared result reading](../../README.md#read-the-results).
 
 ## Limits and failure behavior
 

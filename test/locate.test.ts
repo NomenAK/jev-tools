@@ -3,6 +3,14 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { withEvidenceContext } from "../src/adapters/evidence-context.ts";
+import { STATE_MAX_CHARS } from "../src/constants.ts";
+import {
+  outlineEvidence,
+  sectionOutline,
+  sectionState,
+  sectionStateFits,
+} from "../src/core/locate.ts";
 import { Guide } from "../src/guide.ts";
 import { detectHost } from "../src/host.ts";
 import type { JevClient, State } from "../src/jev/types.ts";
@@ -28,6 +36,9 @@ async function run(
   const client: JevClient = {
     clearCache() {},
     async judge(state, questions, options) {
+      assert.ok(JSON.stringify(state).length <= STATE_MAX_CHARS);
+      const evidence = state.evidence as { context?: unknown } | undefined;
+      assert.ok(evidence?.context, "every pointer stage retains provenance");
       const admitted = options?.beforeRequest?.(1);
       if (admitted && !admitted.ok) return admitted;
       states.push(state);
@@ -45,6 +56,7 @@ async function run(
         answers: {
           pointer: {
             type: "choice",
+            source: "fresh",
             choice:
               Object.entries(p).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "none",
             confidence: 0.01,
@@ -77,7 +89,12 @@ async function run(
       undefined,
       { cwd },
     );
-    return { text: output.content[0]?.text ?? "", states, orders };
+    return {
+      text: output.content[0]?.text ?? "",
+      report: output.details.result,
+      states,
+      orders,
+    };
   } finally {
     await rm(cwd, { recursive: true });
   }
@@ -94,13 +111,19 @@ test("files under 19 KB are refused before any Jev call, 19 000 bytes proceed", 
 test("verdict uses file evidence and probability, not confidence", async () => {
   const result = await run(source, [{ S3: 0.9, S1: 0.05, none: 0.05 }]);
   assert.match(result.text, /large.md:23-33/);
-  assert.doesNotMatch(result.text, /unsure|evidence 2/);
+  assert.equal(result.report.items[0]?.treatment, "judged");
+  const item = result.report.items[0];
+  assert.ok(item);
+  if (item.treatment === "judged") assert.equal(item.judgment.band, "verdict");
 });
 test("gray ranks top two after reverse, not adjacent sections", async () => {
   const p = { S1: 0.55, S5: 0.4, none: 0.05 };
   const result = await run(source, [p, p]);
-  assert.match(result.text, /unsure.*large.md:1-11/);
-  assert.match(result.text, /also:.*large.md:45-55/);
+  const item = result.report.items[0];
+  assert.ok(item);
+  assert.equal(item.treatment, "judged");
+  if (item.treatment === "judged") assert.equal(item.judgment.band, "unsure");
+  assert.match(result.text, /large.md:45-55/);
   assert.equal(result.orders[1]?.at(-1), "none");
   assert.equal(result.orders[1]?.[0], "S6");
 });
@@ -112,7 +135,16 @@ test("shrinking re-ask retains unsure even when final choice becomes clear", asy
     { S5: 0.92, S1: 0.03, S3: 0.03, none: 0.02 },
   ]);
   assert.equal((result.states[2]?.sections as unknown[])?.length, 3);
-  assert.match(result.text, /unsure.*large.md:45-55.*0.92/);
+  const item = result.report.items[0];
+  assert.ok(item);
+  assert.equal(item.treatment, "judged");
+  if (item.treatment === "judged") {
+    assert.equal(item.judgment.band, "unsure");
+    assert.deepEqual(item.judgment.measure.value, {
+      status: "known",
+      value: 0.92,
+    });
+  }
   assert.equal(result.states.length, 3);
 });
 test("large source uses a bounded plan then refines only the selected evidence", async () => {
@@ -157,7 +189,9 @@ test("verdict threshold is inclusive after averaging both orders", async () => {
   const p = { S2: 0.7, none: 0.3 };
   const result = await run(source, [p, p]);
   assert.match(result.text, /large.md:12-22/);
-  assert.doesNotMatch(result.text, /unsure/);
+  const item = result.report.items[0];
+  assert.ok(item);
+  if (item.treatment === "judged") assert.equal(item.judgment.band, "verdict");
 });
 test("none after shrinking remains unsure with search elsewhere", async () => {
   const p = { S1: 0.3, S2: 0.25, S3: 0.24, none: 0.21 };
@@ -166,8 +200,13 @@ test("none after shrinking remains unsure with search elsewhere", async () => {
     p,
     { none: 0.9, S1: 0.05, S2: 0.03, S3: 0.02 },
   ]);
-  assert.match(result.text, /unsure.*none/);
-  assert.match(result.text, /search elsewhere/);
+  const item = result.report.items[0];
+  assert.ok(item);
+  assert.equal(item.treatment, "judged");
+  if (item.treatment === "judged") {
+    assert.equal(item.judgment.band, "unsure");
+    assert.equal(item.judgment.result, "no section fits");
+  }
 });
 test("an unsure plan cannot promote a confident refinement", async () => {
   const large = Array.from(
@@ -179,7 +218,9 @@ test("an unsure plan cannot promote a confident refinement", async () => {
   ).join("\n");
   const p = { B2: 0.55, B1: 0.4, none: 0.05 };
   const result = await run(large, [p, p, { S13: 0.95, none: 0.05 }]);
-  assert.match(result.text, /unsure.*large.md:157-169/);
+  const item = result.report.items[0];
+  assert.ok(item);
+  if (item.treatment === "judged") assert.equal(item.judgment.band, "unsure");
   assert.match(
     result.text,
     /plan unsure: refined only the top block; also consider large.md:1-156/,
@@ -192,8 +233,14 @@ test("a gray none plan retains the readable alternative block", async () => {
   ).join("\n");
   const p = { none: 0.55, B2: 0.4, B1: 0.05 };
   const result = await run(large, [p, p]);
-  assert.match(result.text, /unsure.*none/);
-  assert.match(result.text, /also:.*large.md:170-338/);
+  const item = result.report.items[0];
+  assert.ok(item);
+  assert.equal(item.treatment, "judged");
+  if (item.treatment === "judged") {
+    assert.equal(item.judgment.band, "unsure");
+    assert.equal(item.judgment.result, "no section fits");
+  }
+  assert.match(result.text, /large.md:170-338/);
   assert.equal(result.states.length, 2);
 });
 test("a degenerate one-block plan refuses without judging labels", async () => {
@@ -204,8 +251,22 @@ test("a degenerate one-block plan refuses without judging labels", async () => {
 });
 test("a none verdict includes search elsewhere", async () => {
   const result = await run(source, [{ none: 0.95, S1: 0.05 }]);
-  assert.match(result.text, /none = no section fits/);
-  assert.match(result.text, /search elsewhere/);
+  assert.equal(result.report.execution, "complete");
+  const item = result.report.items[0];
+  assert.ok(item);
+  assert.equal(item.treatment, "judged");
+  if (item.treatment !== "judged") throw Error("expected judgment");
+  assert.equal(item.judgment.result, "no section fits");
+  assert.equal(item.judgment.band, "verdict");
+  assert.ok(item.actionIds.length > 0);
+  const action = result.report.actions.find((action) =>
+    item.actionIds.includes(action.id),
+  );
+  assert.ok(action);
+  assert.deepEqual(action.target, { status: "known", value: "large.md" });
+  assert.equal(action.code, "inspect_native");
+  assert.match(action.instruction, /search elsewhere/i);
+  assert.equal(action.repeatUnchanged, false);
 });
 
 test("locate reports root syntax errors outside its healthy declarations", async () => {
@@ -217,4 +278,48 @@ test("locate reports root syntax errors outside its healthy declarations", async
   const result = await run(text, [{ S1: 0.95, none: 0.05 }], "large.ts");
   assert.match(result.text, /parse_partial: large.ts/);
   assert.match(result.text, /large.ts:/);
+});
+
+test("block planning reserves serialized context in both plan and refinement", () => {
+  const path = "large.md";
+  const goal = "find the final section";
+  const context = {
+    authority: { path: `/repo/${"x".repeat(10_000)}`, origin: "host" as const },
+    effectiveRoot: {
+      path: `/repo/${"x".repeat(10_000)}`,
+      origin: "host" as const,
+    },
+  };
+  const empty = sectionState(path, goal, []);
+  const capacity =
+    STATE_MAX_CHARS -
+    (JSON.stringify(withEvidenceContext(empty, context)).length -
+      JSON.stringify(empty).length);
+  const sections = Array.from({ length: 12 }, (_, index) => ({
+    id: `S${index + 1}`,
+    start: index * 10 + 1,
+    end: index * 10 + 10,
+    label: `section ${index + 1}`,
+    text: `section ${index + 1} ${"x".repeat(8_000)}`,
+  }));
+  const blocks = sectionOutline(path, goal, sections, capacity);
+  assert.ok(blocks.length > 1);
+  const plan = outlineEvidence(path, goal, blocks, capacity);
+  assert.ok(sectionStateFits(path, goal, plan, false, capacity));
+  assert.ok(
+    JSON.stringify(withEvidenceContext(sectionState(path, goal, plan), context))
+      .length <= STATE_MAX_CHARS,
+  );
+  for (const block of blocks) {
+    const refinement = sections.filter(
+      (section) => section.start >= block.start && section.end <= block.end,
+    );
+    assert.ok(refinement.length >= 2);
+    assert.ok(sectionStateFits(path, goal, refinement, false, capacity));
+    assert.ok(
+      JSON.stringify(
+        withEvidenceContext(sectionState(path, goal, refinement), context),
+      ).length <= STATE_MAX_CHARS,
+    );
+  }
 });

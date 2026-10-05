@@ -16,16 +16,22 @@ export async function resolveBase(
       signal,
     });
     if (result.killed)
-      return { ok: false, error: "Git interrupted (cancelled or timed out)." };
+      return {
+        ok: false,
+        cause: signal?.aborted ? "cancelled" : "git_failure",
+        error: "Git interrupted (cancelled or timed out).",
+      };
     if (result.code === 0 && result.stdout.trim())
       return { ok: true, base: result.stdout.trim() };
     return {
       ok: false,
+      cause: "invalid_base",
       error: `Cannot resolve base=${base}: history may be truncated or no shared ancestor is available. Run git fetch --unshallow (or git fetch --deepen=<count>), or choose a base that is an ancestor of HEAD.${result.stderr.trim() ? ` Git: ${result.stderr.trim()}` : ""}`,
     };
   } catch (error) {
     return {
       ok: false,
+      cause: signal?.aborted ? "cancelled" : "git_failure",
       error: `Unable to resolve base=${base}: ${String(error)}`,
     };
   }

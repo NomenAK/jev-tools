@@ -100,3 +100,42 @@ test("collectFiles refuses invalid UTF-8 before creating integrity evidence", as
     await rm(cwd, { recursive: true, force: true });
   }
 });
+test("collectFiles counts canonical identities and serializes aliases only once", async () => {
+  const cwd = await mkdtemp(
+    join(homedir(), ".cache", "jev-tools", "dedup-test-"),
+  );
+  try {
+    await writeFile(join(cwd, "a.ts"), "export const value = 1;".repeat(2000));
+    const result = await collectFiles(
+      cwd,
+      Array.from({ length: 21 }, (_, i) => `${"./".repeat(i)}a.ts`),
+    );
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.deepEqual(Object.keys(result.files), ["a.ts"]);
+      assert.equal(result.identities.length, 1);
+    }
+    assert.equal((await collectFiles(cwd, ["../a.ts", "a.ts"])).ok, false);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+test("collection failure causes preserve admission provenance without parsing prose", async () => {
+  const cwd = await mkdtemp(
+    join(homedir(), ".cache", "jev-tools", "cause-test-"),
+  );
+  try {
+    await writeFile(join(cwd, "binary.dat"), Buffer.from([0, 1, 2]));
+    const binary = await collectFiles(cwd, ["binary.dat"]);
+    assert.equal(binary.ok, false);
+    if (!binary.ok) assert.equal(binary.cause, "binary_or_non_utf8");
+    const forbidden = await collectFiles(cwd, ["../secret.ts"]);
+    assert.equal(forbidden.ok, false);
+    if (!forbidden.ok) assert.equal(forbidden.cause, "forbidden_path");
+    const missing = await collectFiles(cwd, ["missing.ts"]);
+    assert.equal(missing.ok, false);
+    if (!missing.ok) assert.equal(missing.cause, "file_unavailable");
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});

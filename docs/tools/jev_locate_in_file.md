@@ -18,6 +18,7 @@ Code splits the file into declarations or sections and constructs a choice over 
 
 | Field | Type / default | Meaning |
 |---|---|---|
+| `root` | Optional nonempty string | Exact initial Git root or registered worktree of the same repository; see [evidence-root admission](../../README.md#evidence-root). |
 | `path` | Required nonempty string | One repository-relative file, at least 19,000 bytes. |
 | `goal` | Required nonempty string | Sentence describing the behavior you need to find. |
 
@@ -38,9 +39,13 @@ Illustrative call with a fictional repository path, not a recorded execution:
 
 A result names `path:start-end`, a label, probability and the next read. Above 0.7 an unmarked range is a verdict: read it. From 0.4 through 0.7, unsure lists the two best ranges by probability: read both, not an arbitrary next section. Below 0.4 the tool narrows to three leading candidates plus none and judges again, retaining the original unsure band. Option-order sensitivity can also leave the result unsure. `none` means no supplied section fits: search elsewhere or clarify the goal. See [shared result reading](../../README.md#read-the-results).
 
+The versioned report preserves actual primary/control values and their fresh/cache source. Missing required control answers produce unjudged work rather than a synthesized range or probability. Typed diagnostics retain parsing/window omissions and native next actions, including searching elsewhere for a judged `none`.
+
 ## Limits and failure behavior
 
 Small files are refused with direct-read guidance. Whole-file admission is bounded by 320,000 characters and 1,280,000 bytes; larger files take the streamed-window path, not silent whole-file truncation. Window serialization, fallback section sizes, parsing support and choice cardinality are separately bounded. Unreadable or invalid evidence, missing configuration and exhausted session budgets are reported rather than producing a range verdict. Missing optional Python grammar is named with installation guidance. A selected window does not prove every relevant declaration was inspected.
+
+The serialized judgment budget includes per-call evidence provenance. Block planning, excerpt allocation and full-text refinement reserve that metadata capacity before selecting evidence; provenance never silently pushes an otherwise planned request past admission. Selected blocks still require at least two sections and obey the choice limit.
 
 ## Host differences
 

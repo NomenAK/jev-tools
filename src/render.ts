@@ -1,4 +1,5 @@
 import type { Envelope, OutputLine } from "./core/output.ts";
+import type { Knowledge, ResultReportV1, Scope } from "./core/result-report.ts";
 
 function renderLine(line: OutputLine): string {
   switch (line.type) {
@@ -42,4 +43,112 @@ function renderLine(line: OutputLine): string {
 }
 export function renderEnvelope(envelope: Envelope): string {
   return envelope.lines.map(renderLine).join("\n");
+}
+
+function knowledge<T>(
+  value: Knowledge<T>,
+  format: (value: T) => string = String,
+): string {
+  return value.status === "known"
+    ? format(value.value)
+    : `${value.status} (${value.reason})`;
+}
+function scopeLabel(scope: Scope): string {
+  return scope.kind === "call"
+    ? "call"
+    : scope.kind === "item"
+      ? `items ${scope.itemIds.join(", ")}`
+      : scope.kind === "group"
+        ? `groups ${scope.groupIds.join(", ")}`
+        : `inventory ${scope.inventoryIds.join(", ")}`;
+}
+
+/** Human projection uses the same typed facts as structured transport, never prose inference. */
+export function renderResultReport(
+  report: ResultReportV1,
+  options: { details?: Envelope } = {},
+): string {
+  const { context: c, accounting: a } = report;
+  const counts = a.requestedResults;
+  const mode =
+    counts.fresh + counts.cache
+      ? `${counts.fresh} fresh / ${counts.cache} cache Jev results`
+      : counts.static
+        ? "static selection; no Jev judgment"
+        : report.items.some((item) => item.selection?.selected)
+          ? "conservative fallback selection; no Jev judgment"
+          : "no admissible judgment";
+  const lines = [
+    `${report.execution} — ${mode}${counts.notJudged ? `; ${counts.notJudged} not judged` : ""}`,
+    `context: authority ${knowledge(c.authority, (v) => `${v.path} (${v.origin})`)} · requested root ${knowledge(c.requestedRoot)} · effective root ${knowledge(c.effectiveRoot, (v) => `${v.path} (${v.origin}); common-dir ${knowledge(v.commonDir)}`)} · base ${knowledge(c.requestedBase)} → ${knowledge(c.resolvedBase)}`,
+  ];
+  for (const inv of c.inventories) {
+    lines.push(
+      `inventory ${inv.id} (${inv.kind}): discovered ${knowledge(inv.discovered)} · considered ${knowledge(inv.considered)} · scopeRestricted ${inv.scopeRestricted} · rules ${inv.rules.join("; ")} · restrictions ${inv.restrictions.join("; ") || "none"}`,
+    );
+    for (const criterion of inv.criteria)
+      lines.push(
+        `criterion ${JSON.stringify(criterion.criterion)}: ${criterion.outcome}; matches ${knowledge(criterion.matches)}`,
+      );
+  }
+  if (c.command.execution !== "not_requested")
+    lines.push(
+      `command: ${c.command.execution} · cwd ${knowledge(c.command.cwd)} · exit ${knowledge(c.command.exitCode)} · timedOut ${knowledge(c.command.timedOut)}`,
+    );
+  for (const item of report.items) {
+    if (item.treatment === "judged") {
+      const j = item.judgment;
+      lines.push(
+        `${j.band === "verdict" ? "" : `${j.band}  `}${j.uncalibrated ? "uncalibrated  " : ""}${item.label} = ${String(j.result)} (${j.measure.kind} ${knowledge(j.measure.value)}) [${item.source}]${j.reason ? ` — ${j.reason}` : ""}`,
+      );
+      for (const raw of j.rawValues)
+        lines.push(
+          `  raw ${raw.label} = ${String(raw.value)}; probability ${knowledge(raw.probability)}`,
+        );
+      for (const control of j.controls) {
+        lines.push(
+          `  control ${control.id} (${control.kind}, ${control.source}): ${control.outcome}`,
+        );
+        for (const raw of control.rawValues)
+          lines.push(
+            `    raw ${raw.label} = ${String(raw.value)}; probability ${knowledge(raw.probability)}`,
+          );
+      }
+    } else
+      lines.push(
+        `${item.treatment === "static" ? "static" : "unjudged"}  ${item.label}${item.treatment === "static" ? ` — ${item.staticReason}` : ""}`,
+      );
+    for (const evidence of item.evidence)
+      lines.push(
+        `  evidence ${evidence.target} (${evidence.side}): ${knowledge(evidence.canonicalPath)} · aliases ${evidence.aliases.join(", ") || "none"} · revision ${knowledge(evidence.revision)}`,
+      );
+    if (item.selection)
+      lines.push(
+        `  selection: ${item.selection.selected ? "selected" : "not selected"} — ${item.selection.reason}`,
+      );
+    if (item.diagnosticIds.length)
+      lines.push(`  diagnostics ${item.diagnosticIds.join(", ")}`);
+    if (item.actionIds.length)
+      lines.push(`  actions ${item.actionIds.join(", ")}`);
+  }
+  // Complete diagnostic lists keep legacy text-only clients self-contained.
+  for (const d of report.diagnostics)
+    lines.push(
+      `${d.material ? "material " : ""}${d.effect} ${d.id} — ${d.cause}: ${d.fact} · target ${knowledge(d.target)} · origin ${d.origin} · scope ${scopeLabel(d.scope)} · members ${knowledge(d.memberCount)}${d.omittedMembers.length ? ` · omitted ${d.omittedMembers.join(", ")}` : ""} · actions ${d.actionIds.join(", ") || "none"}`,
+    );
+  for (const action of report.actions)
+    lines.push(
+      `next ${action.id} (${action.code}; ${scopeLabel(action.scope)}; target ${knowledge(action.target)}): ${action.condition} — ${action.instruction}`,
+    );
+  if (options.details) {
+    const detailLines = options.details.lines.filter(
+      (line) => line.type === "command" || line.type === "list",
+    );
+    if (detailLines.length)
+      lines.push("details:", renderEnvelope({ lines: detailLines }));
+  }
+  lines.push(
+    `HTTP attempts ${a.httpAttempts} · questions sent ${a.questionsSent} · requested results total ${knowledge(counts.total)} / fresh ${counts.fresh} / cache ${counts.cache} / not judged ${counts.notJudged} / static ${counts.static} · cache probes ${a.cacheHits}/${a.cacheRequests} · auxiliary controls fresh ${a.auxiliary.controls.fresh} / cache ${a.auxiliary.controls.cache} / not judged ${a.auxiliary.controls.notJudged} / static ${a.auxiliary.controls.static} · passages fresh ${a.auxiliary.passages.fresh} / cache ${a.auxiliary.passages.cache} / not judged ${a.auxiliary.passages.notJudged} · current cost USD ${knowledge(a.costUsd)} · elapsed ${a.elapsedMs} ms`,
+  );
+  return lines.join("\n");
 }

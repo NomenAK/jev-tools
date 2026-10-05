@@ -1,8 +1,12 @@
-import { matchesGlob, relative, resolve } from "node:path";
+import { isAbsolute, matchesGlob, relative, resolve } from "node:path";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "@sinclair/typebox";
 import { createAnalysisContext } from "../adapters/analysis-context.ts";
-import { canonicalPath } from "../adapters/canonical-path.ts";
+import {
+  type EvidenceContext,
+  resolveEvidenceContext,
+  withEvidenceContext,
+} from "../adapters/evidence-context.ts";
 import { collectUnits } from "../adapters/git.ts";
 import { resolveBase } from "../adapters/git-base.ts";
 import { shareGitInventory } from "../adapters/git-inventory.ts";
@@ -26,6 +30,11 @@ import type {
   Limitation,
 } from "../core/output.ts";
 import { buildEnvelope } from "../core/output.ts";
+import {
+  type Cause,
+  type ResultReportV1,
+  known as reportKnown,
+} from "../core/result-report.ts";
 import { buildRunnerCommands } from "../core/test-commands.ts";
 import { prepareCoverageWitnesses } from "../core/test-coverage.ts";
 import type { TestEntry } from "../core/test-discovery.ts";
@@ -42,12 +51,14 @@ import {
   buildCoverageWitnessUnits,
   evaluateBatchWitnessHealth,
 } from "../presets/witnesses.ts";
-import { renderEnvelope } from "../render.ts";
+import { renderResultReport } from "../render.ts";
 import type { ToolDependencies } from "../runtime.ts";
 import { SELECT_TESTS_DESCRIPTION } from "../texts/select-tests.ts";
+import { controlsFor, ReviewReport, reportMetrics } from "./review-report.ts";
 
 export const selectTestsParameters = Type.Object(
   {
+    root: Type.Optional(Type.String()),
     base: Type.Optional(Type.String({ minLength: 1 })),
     paths: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
     witnesses: Type.Optional(
@@ -126,7 +137,13 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
       ctx: { cwd: string } & GuideContext,
     ) {
       const client = dependencies.client;
-      const cwd = await canonicalPath(ctx.cwd);
+      const evidence = await resolveEvidenceContext(ctx.cwd, args.root, {
+        exec: execute,
+        signal,
+        origin: dependencies.evidenceOrigin,
+      });
+      const evidenceContext = evidence.context;
+      const cwd = evidence.ok ? evidence.cwd : evidenceContext.authority.path;
       const started = performance.now();
       const exec = shareGitInventory(execute);
       const totals = {
@@ -136,10 +153,17 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
         cacheRequests: 0,
         usage: { inputTokens: 0, costUsd: 0 },
       };
+      const selectionEvidence = {
+        criteria: [] as { criterion: string; matches: string[] }[],
+        wideningTriggers: [] as string[],
+        inventory: [] as string[],
+      };
+      const report = new ReviewReport();
       let costKnown = false;
+      let unknownCost = false;
       let sent = 0;
       let budget: BudgetRefusal | undefined;
-      const finish = (input: Omit<EnvelopeInput, "yield">) => {
+      const finish = (input: Omit<EnvelopeInput, "yield">, cause?: Cause) => {
         const limitKeys = new Set<string>();
         const uniqueLimits = input.limitations?.filter((limit) => {
           const key = JSON.stringify([limit.fact, limit.next]);
@@ -152,26 +176,78 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
           limitations: uniqueLimits,
           yield: {
             ...totals,
-            costUsd: costKnown ? totals.usage.costUsd : undefined,
+            costUsd:
+              costKnown && !unknownCost ? totals.usage.costUsd : undefined,
             elapsedMs: performance.now() - started,
           },
         });
+        if (input.refusal) {
+          report.refusal = true;
+          report.diagnose(cause ?? "internal_error", input.refusal);
+        }
+        if (!report.items.size && !input.refusal)
+          report.diagnose(
+            "collection_empty",
+            "No test decision candidates in the discovered inventory; this is not proof of no affected tests.",
+            undefined,
+            [],
+            false,
+          );
+        const result = report.build(
+          "jev_select_tests",
+          evidenceContext,
+          reportMetrics(envelope),
+        );
         runtime.session.record(envelope);
         runtime.guide.deliver(ctx);
-        const details: Judgment & { limitations?: readonly Limitation[] } = {
+        const details: Judgment & {
+          result: ResultReportV1;
+          limitations?: readonly Limitation[];
+          evidenceContext: EvidenceContext;
+          selectionEvidence: typeof selectionEvidence;
+        } = {
           ok: true,
           answers: {},
           ...totals,
+          evidenceContext,
+          selectionEvidence,
+          result,
           limitations: uniqueLimits,
         };
         return {
-          content: [{ type: "text" as const, text: renderEnvelope(envelope) }],
+          content: [
+            {
+              type: "text" as const,
+              text: renderResultReport(result, { details: envelope }),
+            },
+          ],
           details,
           ...hostUsage(host.isOmp, costKnown ? totals.usage : undefined),
         };
       };
+      if (!evidence.ok)
+        return finish(
+          { refusal: evidence.error },
+          evidence.cause ?? "invalid_root",
+        );
+      evidenceContext.requestedBase = args.base ?? "HEAD";
+      for (const path of args.paths ?? [])
+        if (
+          isAbsolute(path) ||
+          path.split(/[\\/]/).includes("..") ||
+          path.split(/[\\/]/).includes(".git")
+        )
+          return finish(
+            { refusal: `Path not permitted: ${path}` },
+            "forbidden_path",
+          );
       const comparison = await resolveBase(exec, cwd, args.base, signal);
-      if (!comparison.ok) return finish({ refusal: comparison.error });
+      if (!comparison.ok)
+        return finish(
+          { refusal: comparison.error },
+          comparison.cause ?? "invalid_base",
+        );
+      evidenceContext.resolvedBase = comparison.base;
       const analysis = await createAnalysisContext();
       const [inventory, diff] = await Promise.all([
         collectTestInventory(exec, cwd, signal),
@@ -181,8 +257,16 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
           analysis.parser,
         ),
       ]);
-      if (!inventory.ok) return finish({ refusal: inventory.error });
-      if (!diff.ok) return finish({ refusal: diff.error });
+      if (!inventory.ok)
+        return finish(
+          { refusal: inventory.error },
+          inventory.cause ?? "file_unavailable",
+        );
+      if (!diff.ok)
+        return finish({ refusal: diff.error }, diff.cause ?? "git_failure");
+      if (evidenceContext.effectiveRoot)
+        evidenceContext.effectiveRoot.path = inventory.cwd;
+      selectionEvidence.inventory = [...inventory.paths];
       const known = new Set(inventory.paths);
       const sourceFiles = new Map<string, ImportSource>();
       const read = async (path: string): Promise<ImportSource | undefined> => {
@@ -277,6 +361,23 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
           !graph.edges.has(file.path) ||
           !/\.[cm]?[jt]sx?$|\.py$/.test(file.path),
       );
+      selectionEvidence.wideningTriggers = diff.files
+        .filter(
+          (file) =>
+            !graph.edges.has(file.path) ||
+            !/\.[cm]?[jt]sx?$|\.py$/.test(file.path),
+        )
+        .map((file) => file.path);
+      selectionEvidence.criteria = (args.paths ?? []).map((criterion) => ({
+        criterion,
+        matches: versionedEntries
+          .filter(
+            (entry) =>
+              matchesGlob(entry.path, criterion) ||
+              entry.path.startsWith(`${criterion.replace(/\/$/, "")}/`),
+          )
+          .map((entry) => entry.path),
+      }));
       const candidates = versionedEntries
         .filter(
           (entry) =>
@@ -308,6 +409,77 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
             outside,
           );
         });
+      report.inventories.push({
+        id: "test-candidates",
+        kind: "tests",
+        rules: [
+          "Tracked supported test declarations and literal project runner configuration",
+          "Import closure selection; conservative fallback preserves unjudged decisions",
+        ],
+        restrictions: args.paths ?? [],
+        discovered: reportKnown(versionedEntries.length),
+        considered: reportKnown(candidates.length),
+        scopeRestricted: Boolean(args.paths?.length),
+        criteria: selectionEvidence.criteria.map((criterion) => ({
+          criterion: criterion.criterion,
+          matches: reportKnown(criterion.matches.length),
+          outcome: criterion.matches.length ? "matched" : "no_match",
+          diagnosticIds: [],
+        })),
+      });
+      for (const candidate of candidates) {
+        const scenarios = candidate.entry.scenarios;
+        if (!scenarios.length)
+          report.expect(
+            `test:${candidate.entry.path}:unknown`,
+            candidate.entry.path,
+            "scenario",
+          );
+        for (const scenario of scenarios)
+          report.expect(
+            `test:${candidate.entry.path}:${scenario.id}`,
+            `${candidate.entry.path}: ${scenario.name}`,
+            "scenario",
+            `test:${candidate.entry.path}`,
+          );
+      }
+      for (const criterion of selectionEvidence.criteria)
+        if (!criterion.matches.length) {
+          report.diagnose(
+            "criteria_no_match",
+            `No discovered tests match criterion ${criterion.criterion}`,
+            criterion.criterion,
+          );
+          const excluded = inventory.limits.filter(
+            (limit) =>
+              matchesGlob(limit.path, criterion.criterion) ||
+              limit.path.startsWith(
+                `${criterion.criterion.replace(/\/$/, "")}/`,
+              ),
+          );
+          if (excluded.length) {
+            report.diagnose(
+              "outside_inventory",
+              "Requested criterion names entries excluded from the admitted inventory",
+              criterion.criterion,
+              [],
+              false,
+              excluded.map((limit) => limit.path),
+            );
+            const entry = report.inventories[0]?.criteria.find(
+              (entry) => entry.criterion === criterion.criterion,
+            );
+            if (entry) entry.outcome = "outside_inventory";
+          }
+        }
+      if (selectionEvidence.wideningTriggers.length)
+        report.diagnose(
+          "conservative_widening",
+          `Changed files outside supported dependency graph: ${selectionEvidence.wideningTriggers.join(", ")}`,
+          undefined,
+          [],
+          false,
+        );
       const selected: {
         entry: TestEntry;
         scenarioIds: readonly string[] | null;
@@ -373,9 +545,11 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
         questions: Record<string, Question>,
         witnessIds?: readonly string[],
       ) => {
+        state = withEvidenceContext(state, evidenceContext);
         if (JSON.stringify(state).length > STATE_MAX_CHARS)
           return {
             ok: false as const,
+            cause: "evidence_too_large" as const,
             error: `required evidence exceeds STATE_MAX_CHARS=${STATE_MAX_CHARS}`,
           };
         if (args.max_calls !== undefined && sent >= args.max_calls) {
@@ -390,6 +564,8 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
           signal,
           witnesses: witnessIds,
           ...runtime.session.requestGate(),
+          admissionCause: () =>
+            budget?.kind === "session" ? "session_budget" : "call_budget",
           beforeRequest: (questionCount) => {
             if (args.max_calls !== undefined && sent >= args.max_calls) {
               budget = {
@@ -412,6 +588,7 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
         totals.questions += result.questions ?? 0;
         totals.cacheHits += result.cacheHits ?? 0;
         totals.cacheRequests += result.cacheRequests ?? 0;
+        unknownCost ||= result.usage === undefined;
         if (result.usage) {
           costKnown = true;
           totals.usage.inputTokens += result.usage.inputTokens;
@@ -422,6 +599,27 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
       const pointerResults = await Promise.all(
         candidates.map(async (candidate) => {
           const { entry } = candidate;
+          const reportIds = [...report.items.values()]
+            .filter(
+              (item) =>
+                item.groupId === `test:${entry.path}` ||
+                item.id === `test:${entry.path}:unknown`,
+            )
+            .map((item) => item.id);
+          if (candidate.touched)
+            for (const id of reportIds) report.static(id, "touched", true);
+          if (
+            !candidate.units.length &&
+            !candidate.uncertain &&
+            !outside &&
+            !candidate.touched
+          )
+            for (const id of reportIds)
+              report.static(
+                id,
+                "static import closure cannot reach changed units",
+                false,
+              );
           if (candidate.touched)
             return {
               candidate,
@@ -440,6 +638,12 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
           if (
             units.some((unit) => unit.before === null && unit.after === null)
           ) {
+            report.diagnose(
+              "binary_or_non_utf8",
+              "Changed source unavailable",
+              entry.path,
+              reportIds,
+            );
             for (const unit of units) incompleteUnits.add(unit.id);
             unjudged.push({
               label: entry.path,
@@ -449,6 +653,13 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
             return { candidate, selected: null, touched: false };
           }
           if (!entry.scenarios.length) {
+            report.totalUnknown = true;
+            report.diagnose(
+              "unsupported_syntax",
+              "Scenario names or count unresolved",
+              entry.path,
+              reportIds,
+            );
             unjudged.push({
               label: entry.path,
               reason: "scenario names or count unresolved",
@@ -461,6 +672,9 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
             (item) => item.scenario.id,
           );
           for (const item of prepared.unjudged) {
+            report.diagnose("evidence_too_large", item.reason, entry.path, [
+              `test:${entry.path}:${item.scenario.id}`,
+            ]);
             for (const unit of units) incompleteUnits.add(unit.id);
             unjudged.push({
               label: `${entry.path}: ${item.scenario.name}`,
@@ -494,6 +708,41 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
                 ]),
               );
               const result = await judge(batch.state, questions);
+              const batchIds = batch.scenarios.map(
+                (scenario) => `test:${entry.path}:${scenario.id}`,
+              );
+              if (!result.ok)
+                report.failure(
+                  result,
+                  batchIds,
+                  budget
+                    ? budget.kind === "session"
+                      ? "session_budget"
+                      : "call_budget"
+                    : !client
+                      ? "not_configured"
+                      : undefined,
+                );
+              else
+                for (const scenario of batch.scenarios) {
+                  const answer = result.answers[scenario.id];
+                  const id = `test:${entry.path}:${scenario.id}`;
+                  report.answer(id, answer, {
+                    band: prepared.unjudged.length ? "unsure" : "verdict",
+                  });
+                  const item = report.items.get(id);
+                  if (!item)
+                    throw new Error(`Unregistered selection result ${id}`);
+                  item.selection = {
+                    selected:
+                      answer?.type !== "choice" ||
+                      1 - (answer.probabilities.none ?? 0) >= SELECT_MIN,
+                    reason:
+                      answer?.type === "choice"
+                        ? "changed-unit pointer selection threshold"
+                        : "conservative_fallback",
+                  };
+                }
               if (!result.ok) {
                 fallback ||= !budget;
                 for (const unit of units) incompleteUnits.add(unit.id);
@@ -587,6 +836,24 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
             preliminary.state,
             candidate.entry.scenarios,
           );
+          for (const unit of units)
+            for (const scenario of candidate.entry.scenarios)
+              report.expect(
+                `coverage:${candidate.entry.path}:${scenario.id}:${unit.id}`,
+                `${candidate.entry.path}: ${scenario.name} executes ${unit.name}`,
+                "scenario",
+                `coverage:${candidate.entry.path}:${scenario.id}`,
+              );
+          for (const omitted of prepared.unjudged)
+            for (const unit of units)
+              report.diagnose(
+                "evidence_too_large",
+                omitted.reason,
+                candidate.entry.path,
+                [
+                  `coverage:${candidate.entry.path}:${omitted.scenario.id}:${unit.id}`,
+                ],
+              );
           if (prepared.unjudged.length || !candidate.entry.scenarios.length)
             for (const unit of units) incompleteUnits.add(unit.id);
           await Promise.all(
@@ -620,6 +887,72 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
                 result,
               );
               limitations.push(...health.failures);
+              for (const failure of health.failures)
+                report.diagnose(
+                  "control_failure",
+                  failure.fact,
+                  candidate.entry.path,
+                  units.flatMap((unit) =>
+                    batch.scenarios
+                      .filter((scenario) =>
+                        health.unhealthyQuestionIds.has(
+                          `${scenario.id}_${unit.id}`,
+                        ),
+                      )
+                      .map(
+                        (scenario) =>
+                          `coverage:${candidate.entry.path}:${scenario.id}:${unit.id}`,
+                      ),
+                  ),
+                  false,
+                );
+              report.countControls(
+                result,
+                witnessQuestions.witnesses.map((witness) => witness.id),
+              );
+              for (const unit of units)
+                for (const scenario of batch.scenarios) {
+                  const id = `coverage:${candidate.entry.path}:${scenario.id}:${unit.id}`;
+                  report.expect(
+                    id,
+                    `${candidate.entry.path}: ${scenario.name} executes ${unit.name}`,
+                    "scenario",
+                    `coverage:${candidate.entry.path}:${scenario.id}`,
+                  );
+                  if (!result.ok)
+                    report.failure(
+                      result,
+                      [id],
+                      budget
+                        ? budget.kind === "session"
+                          ? "session_budget"
+                          : "call_budget"
+                        : !client
+                          ? "not_configured"
+                          : undefined,
+                    );
+                  else
+                    report.answer(
+                      id,
+                      result.answers[`${scenario.id}_${unit.id}`],
+                      {
+                        band: health.unhealthyQuestionIds.has(
+                          `${scenario.id}_${unit.id}`,
+                        )
+                          ? "unsure"
+                          : "verdict",
+                        reason: health.unhealthyQuestionIds.get(
+                          `${scenario.id}_${unit.id}`,
+                        ),
+                      },
+                      controlsFor(
+                        `${scenario.id}_${unit.id}`,
+                        result,
+                        witnessQuestions.witnesses.map((witness) => witness.id),
+                      ),
+                      false,
+                    );
+                }
               for (const unit of units) {
                 if (!result.ok) {
                   fallback ||= !budget;
@@ -685,16 +1018,34 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
         evidenceLimits.length > 0 ||
         Boolean(args.paths?.length);
       for (const unit of residual)
-        if ((coverage.get(unit.id) ?? 0) < SELECT_MIN)
-          answers.push({
-            label: `changed, run by no discovered test: ${unit.name} (${unit.file})`,
-            value: {
-              head: "within discovered inventory only",
-              p: coverage.get(unit.id) ?? 0,
-            },
-            band:
-              incomplete || incompleteUnits.has(unit.id) ? "unsure" : "verdict",
-          });
+        if ((coverage.get(unit.id) ?? 0) < SELECT_MIN) {
+          const supportingIds = [...report.items.keys()].filter(
+            (id) => id.startsWith("coverage:") && id.endsWith(`:${unit.id}`),
+          );
+          report.diagnose(
+            incomplete || incompleteUnits.has(unit.id)
+              ? "collection_omitted"
+              : "conservative_widening",
+            `Derived from retained coverage decisions: no discovered test established execution of ${unit.name} (${unit.file}) within the considered inventory only.${incomplete || incompleteUnits.has(unit.id) ? " Absence remains unsure because evidence, scope, or controls are incomplete." : " This is not a global coverage claim."}`,
+            unit.file,
+            supportingIds,
+            false,
+          );
+          if (!supportingIds.length) {
+            const diagnostic = report.diagnostics.at(-1);
+            if (diagnostic)
+              diagnostic.scope = {
+                kind: "inventory",
+                inventoryIds: ["test-candidates"],
+              };
+            const action = report.actions.at(-1);
+            if (action)
+              action.scope = {
+                kind: "inventory",
+                inventoryIds: ["test-candidates"],
+              };
+          }
+        }
       if (fallback) {
         selected.length = 0;
         selected.push(
@@ -702,6 +1053,13 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
             entry: candidate.entry,
             scenarioIds: null,
           })),
+        );
+        report.diagnose(
+          "conservative_widening",
+          "Unavailable judgment conservatively selects all considered test candidates; static reachability exclusions do not narrow this fallback.",
+          undefined,
+          [],
+          false,
         );
         limitations.push({
           fact: "fallback: all",
@@ -719,10 +1077,98 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
           })),
         ),
       );
+      for (const limit of commands.limits)
+        for (const path of limit.files)
+          report.diagnose("unresolved_runner", limit.reason, path, [], false);
+      for (const limit of discovery.limits)
+        report.diagnose(
+          "unresolved_runner",
+          limit.kind,
+          limit.path,
+          [],
+          limit.kind !== "local_runner_unproven" &&
+            limit.kind !== "interactive_script_skipped",
+        );
+      for (const limit of inventory.limits)
+        report.diagnose("collection_omitted", limit.kind, limit.path);
+      for (const limit of diff.limits)
+        report.diagnose("collection_omitted", limit.kind, limit.file);
+      for (const limit of graph.limits)
+        report.diagnose(
+          "dynamic_dependency",
+          `${limit.kind}${limit.specifier ? ` (${limit.specifier})` : ""}`,
+          limit.path,
+          [],
+          false,
+        );
+      for (const item of report.items.values()) {
+        const candidate = candidates.find(
+          (candidate) =>
+            item.id.startsWith(`test:${candidate.entry.path}:`) ||
+            item.id.startsWith(`coverage:${candidate.entry.path}:`),
+        );
+        if (!candidate) continue;
+        const plan = selected.find((plan) => plan.entry === candidate.entry);
+        const scenario = candidate.entry.scenarios.find(
+          (scenario) =>
+            item.id === `test:${candidate.entry.path}:${scenario.id}` ||
+            item.id.startsWith(
+              `coverage:${candidate.entry.path}:${scenario.id}:`,
+            ),
+        );
+        const isSelected = Boolean(
+          plan &&
+            (plan.scenarioIds === null ||
+              (scenario && plan.scenarioIds.includes(scenario.id))),
+        );
+        item.selection = {
+          selected: isSelected,
+          reason: fallback
+            ? "conservative_fallback"
+            : item.treatment === "static"
+              ? item.staticReason
+              : item.treatment === "not_judged"
+                ? "conservative_fallback"
+                : "unchanged selection policy and whole-file widening",
+        };
+      }
+      for (const criterion of report.inventories[0]?.criteria ?? [])
+        criterion.diagnosticIds = report.diagnostics
+          .filter(
+            (diagnostic) =>
+              diagnostic.cause === "criteria_no_match" &&
+              diagnostic.target.status === "known" &&
+              diagnostic.target.value === criterion.criterion,
+          )
+          .map((diagnostic) => diagnostic.id);
+      report.actions.push({
+        id: "execute-selection-plan",
+        code: "execute_plan",
+        target: reportKnown(inventory.cwd),
+        scope: { kind: "call" },
+        condition:
+          "When verification is authorized and the listed runner/configuration is available.",
+        instruction:
+          "Execute the retained runner commands separately; this tool has not executed any test.",
+        repeatUnchanged: false,
+      });
       if (skipped)
         limitations.push({
           fact: `${skipped} tests skipped because their imports cannot reach the diff`,
           next: "an alias or dynamic import would have kept a test in",
+        });
+      for (const criterion of selectionEvidence.criteria)
+        if (!criterion.matches.length)
+          limitations.push({
+            path: criterion.criterion,
+            cause: "selection criterion has no discovered test match",
+            fact: `selection criterion without match: ${criterion.criterion}`,
+            next: "Change the criterion or supply the missing test/configuration evidence; an empty scope does not prove absence of impact.",
+          });
+      if (selectionEvidence.wideningTriggers.length)
+        limitations.push({
+          fact: `selection widened conservatively: ${selectionEvidence.wideningTriggers.join(", ")}`,
+          next: "Run the widened static plans; dependency reachability is not established for these changed files.",
         });
       return finish({
         answers,

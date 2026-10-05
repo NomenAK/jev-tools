@@ -6,6 +6,11 @@ import { join } from "node:path";
 import { type TestContext, test } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { checkFunctionalSmoke } from "../scripts/check-mcp-package.ts";
+import {
+  buildResultReport,
+  known,
+  uncollectedContext,
+} from "../src/core/result-report.ts";
 
 const TOOLS = [
   "jev_ask",
@@ -15,6 +20,50 @@ const TOOLS = [
   "jev_check_diff",
   "jev_select_tests",
 ];
+
+const reportFixture = buildResultReport({
+  tool: "jev_ask",
+  context: uncollectedContext({
+    authority: known({ path: "/fixture", origin: "server" }),
+  }),
+  items: [
+    {
+      id: "q1",
+      kind: "question",
+      label: "synthetic smoke",
+      groupId: "q1",
+      evidence: [],
+      diagnosticIds: [],
+      actionIds: [],
+      treatment: "judged",
+      source: "fresh",
+      judgment: {
+        band: "verdict",
+        result: true,
+        measure: { kind: "probability", value: known(0.96) },
+        reason: "",
+        uncalibrated: true,
+        rawValues: [],
+        controls: [],
+      },
+    },
+  ],
+  diagnostics: [],
+  actions: [],
+  total: known(1),
+  metrics: {
+    calls: 1,
+    questions: 1,
+    cacheHits: 0,
+    cacheRequests: 1,
+    costUsd: 0.0001,
+    elapsedMs: 100,
+  },
+  auxiliary: {
+    controls: { fresh: 0, cache: 0, notJudged: 0, static: 0 },
+    passages: { fresh: 0, cache: 0, notJudged: 0 },
+  },
+});
 
 // A separate OS process owns its clocks: fake timers cannot exercise stdio
 // replies, pipe closure or child reaping. Deadlines bound failures, not latency.
@@ -27,7 +76,7 @@ function fakeServer(
     obsoleteIdentity?: boolean;
     omitCaching?: boolean;
     echoLegacy?: boolean;
-    ask?: "good" | "isError" | "noFooter";
+    ask?: "good" | "isError" | "missingReport";
   } = {},
 ): string {
   return `
@@ -35,16 +84,24 @@ import { createInterface } from "node:readline";
 const versions = ${JSON.stringify(options.versions ?? ["2026-07-28", "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"])};
 const tools = ${JSON.stringify((options.tools ?? TOOLS).map((name) => ({ name, inputSchema: { type: "object" }, annotations: { openWorldHint: true } })))};
 const reply = (id, result) => process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id, result: { resultType: "complete", ...result } }) + "\\n");
+let version = "2025-11-25";
 createInterface({ input: process.stdin }).on("line", line => {
   const message = JSON.parse(line);
   if (message.method === "server/discover") reply(message.id, {
     supportedVersions: versions, capabilities: { tools: {} }, ttlMs: 0, cacheScope: "private",
     ...(${options.obsoleteIdentity ?? false} ? { serverInfo: { name: "t", version: "1" } } : { _meta: { "io.modelcontextprotocol/serverInfo": { name: "t", version: "1" } } })
   });
-  if (message.method === "initialize") reply(message.id, { protocolVersion: ${options.echoLegacy ?? true} && versions.includes(message.params.protocolVersion) && message.params.protocolVersion !== "2026-07-28" ? message.params.protocolVersion : "2025-11-25" });
-  if (message.method === "tools/list" && ${options.answerToolsList ?? true}) reply(message.id, { tools, ...(${options.omitCaching ?? false} ? {} : { ttlMs: 0, cacheScope: "private" }) });
+  if (message.method === "initialize") {
+    version = ${options.echoLegacy ?? true} && versions.includes(message.params.protocolVersion) && message.params.protocolVersion !== "2026-07-28" ? message.params.protocolVersion : "2025-11-25";
+    reply(message.id, { protocolVersion: version });
+  }
+  if (message.method === "tools/list" && ${options.answerToolsList ?? true}) reply(message.id, {
+    tools: tools.map(tool => ["2024-11-05", "2025-03-26"].includes(message.params?._meta?.["io.modelcontextprotocol/protocolVersion"] ?? version) ? tool : { ...tool, outputSchema: { type: "object" } }),
+    ...(${options.omitCaching ?? false} ? {} : { ttlMs: 0, cacheScope: "private" })
+  });
   if (message.method === "tools/call") reply(message.id, {
-    content: [{ type: "text", text: ${JSON.stringify(options.ask === "noFooter" ? "free1 = yes (0.96)" : 'free1 "Is synthetic smoke testing working?" = yes (0.96)\n1 calls · 1 questions · $0.00010 · cache 0/1 · 0.1 s')} }],
+    content: [{ type: "text", text: "Synthetic judgment delivered with its structured evidence." }],
+    ...(${options.ask === "missingReport"} ? {} : { structuredContent: { result: ${JSON.stringify(reportFixture)} } }),
     isError: ${options.ask === "isError"}
   });
 }).on("close", () => { if (${options.exitOnStdinClose ?? true}) process.exit(0); });
@@ -80,7 +137,7 @@ for (const [label, options] of [
   ["missing caching fields", { omitCaching: true }],
   ["legacy version not echoed", { echoLegacy: false }],
   ["tool error", { ask: "isError" }],
-  ["tool answer without evidence footer", { ask: "noFooter" }],
+  ["tool answer without structured evidence", { ask: "missingReport" }],
 ] as const) {
   test(`the gate rejects ${label}`, async (t) => {
     await assert.rejects(

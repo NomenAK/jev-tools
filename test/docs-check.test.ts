@@ -62,12 +62,14 @@ test("docs preserves obtained findings and names unjudged sections when the requ
         answers: {
           status: {
             type: "choice",
+            source: "fresh" as const,
             choice: "now_false",
             confidence: 1,
             probabilities: { unrelated: 0, still_true: 0, now_false: 1 },
           },
           sentence: {
             type: "choice",
+            source: "fresh" as const,
             choice: "s1",
             confidence: 1,
             probabilities: { s1: 1, none: 0 },

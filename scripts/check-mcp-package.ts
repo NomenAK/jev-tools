@@ -31,6 +31,8 @@ import {
   MCP_PACKAGE_REPLY_TIMEOUT_MS,
   MCP_PACKAGE_STDERR_MAX_CHARS,
 } from "../src/constants.ts";
+import { validateResultReport } from "../src/core/result-report.ts";
+import { isMcpStructuredResult } from "../src/report-schema.ts";
 import { isRecord } from "../src/result.ts";
 
 interface ServerJson {
@@ -204,17 +206,20 @@ function assertToolEntry(tool: unknown): void {
   }
 }
 
-/** Modern tools/list: six names in order, object schemas, caching fields. */
-export function assertToolsListResult(result: unknown): void {
+/** Version-aware tool discovery: six names and supported schema fields. */
+export function assertToolsListResult(
+  result: unknown,
+  version = MODERN_VERSION,
+): void {
   if (!isRecord(result))
     throw new Error(`tools/list failed: ${JSON.stringify(result)}`);
-  requireComplete(result, "tools/list");
-  if (result.ttlMs !== 0)
-    throw new Error(`tools/list missing ttlMs 0: ${JSON.stringify(result)}`);
-  if (result.cacheScope !== "private")
-    throw new Error(
-      `tools/list missing cacheScope private: ${JSON.stringify(result)}`,
-    );
+  if (version === MODERN_VERSION) {
+    requireComplete(result, "tools/list");
+    if (result.ttlMs !== 0 || result.cacheScope !== "private")
+      throw new Error(
+        `tools/list missing conservative caching: ${JSON.stringify(result)}`,
+      );
+  }
   const tools = result.tools;
   if (!Array.isArray(tools))
     throw new Error(
@@ -226,17 +231,27 @@ export function assertToolsListResult(result: unknown): void {
       throw new Error(`tools/list entry missing name: ${JSON.stringify(tool)}`);
     names.push(tool.name);
     assertToolEntry(tool);
+    const structured = version !== "2024-11-05" && version !== "2025-03-26";
+    if (
+      structured
+        ? !isRecord(tool.outputSchema)
+        : Object.hasOwn(tool, "outputSchema")
+    )
+      throw new Error(`tools/list outputSchema incompatible with ${version}`);
   }
   const expected = [...TOOLS];
   if (JSON.stringify(names) !== JSON.stringify(expected))
     throw new Error(`tools/list returned [${names.join(", ")}]`);
 }
 
-/** Real jev_ask: no isError, deterministic verdict plus calls/cost footer. */
-export function assertJevAskResult(result: unknown): string {
+/** Real jev_ask: inspect structured outcomes, never parse prose for a verdict. */
+export function assertJevAskResult(
+  result: unknown,
+  version = LATEST_INITIALIZE_VERSION,
+): string {
   if (!isRecord(result))
     throw new Error(`jev_ask failed: ${JSON.stringify(result)}`);
-  requireComplete(result, "tools/call jev_ask");
+  if (version === MODERN_VERSION) requireComplete(result, "tools/call jev_ask");
   if (result.isError === true)
     throw new Error(`jev_ask isError: ${JSON.stringify(result)}`);
   const content = result.content;
@@ -250,14 +265,31 @@ export function assertJevAskResult(result: unknown): string {
   )
     throw new Error(`jev_ask content not text: ${JSON.stringify(result)}`);
   const text = first.text;
-  if (!text.includes(`= yes (${FIXTURE_NOUL})`))
-    throw new Error(`jev_ask answer missing yes (${FIXTURE_NOUL}): ${text}`);
+  if (!isMcpStructuredResult(result.structuredContent))
+    throw new Error(
+      "jev_ask structured result does not match its public schema",
+    );
+  const report = result.structuredContent.result;
+  const problems = validateResultReport(report);
+  if (problems.length)
+    throw new Error(`jev_ask invalid report: ${problems.join("; ")}`);
   if (
-    !/\d+ calls · \d+ questions · \$[\d.]+ · cache \d+\/\d+ · \d+\.\d s/.test(
-      text,
+    !report.items.some(
+      (item) =>
+        item.treatment === "judged" &&
+        item.judgment.band === "verdict" &&
+        (item.judgment.result === true || item.judgment.result === "yes") &&
+        item.judgment.measure.value.status === "known" &&
+        item.judgment.measure.value.value === FIXTURE_NOUL,
     )
   )
-    throw new Error(`jev_ask footer missing calls/cost/cache/time: ${text}`);
+    throw new Error("jev_ask did not return the fixture judgment");
+  if (
+    report.accounting.httpAttempts < 1 ||
+    report.accounting.questionsSent < 1 ||
+    report.accounting.costUsd.status !== "known"
+  )
+    throw new Error("jev_ask lacks observed HTTP/question/cost accounting");
   return text;
 }
 
@@ -478,6 +510,10 @@ export async function checkFunctionalSmoke(
         throw new Error(
           `initialize ${version} echoed ${typeof echoed === "string" ? echoed : JSON.stringify(echoMessage)}`,
         );
+      const listed = messageResult(
+        await connection.call(nextId++, "tools/list", {}),
+      );
+      assertToolsListResult(listed, version);
     }
     const fallbackMessage = await connection.call(nextId++, "initialize", {
       protocolVersion: MODERN_VERSION,
@@ -490,7 +526,10 @@ export async function checkFunctionalSmoke(
         `initialize ${MODERN_VERSION} must fall back to ${LATEST_INITIALIZE_VERSION}: ${JSON.stringify(fallbackMessage)}`,
       );
     const legacyListMessage = await connection.call(nextId++, "tools/list", {});
-    assertToolsListResult(messageResult(legacyListMessage));
+    assertToolsListResult(
+      messageResult(legacyListMessage),
+      LATEST_INITIALIZE_VERSION,
+    );
     const modernListMessage = await connection.call(nextId++, "tools/list", {
       _meta: {
         [VERSION_META_KEY]: MODERN_VERSION,

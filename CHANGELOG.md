@@ -9,6 +9,30 @@ modules are not a stable library API.
 
 ## [Unreleased]
 
+### Added
+
+- Optional `root` on all six tools, limited to the initial repository's exact Git root or registered live worktrees with the same common directory; invalid overrides refuse before evidence, commands, cache or judgments.
+- Versioned typed reports for every tool outcome, including refused and unjudged work: evidence context, item provenance, scoped diagnostics/actions and separate requested-result, HTTP, cache, control, passage and cost accounting.
+- MCP output schema and structured results from protocol 2025-06-18 onward, with self-contained text for older clients and per-request version isolation.
+
+### Changed
+
+- Explicit evidence selectors, rather than ordinary lexical mentions, govern missing-evidence exclusions. Canonical file versions are serialized once with alias metadata; before/current evidence remains distinct and missing requirements affect their own question group unless global.
+- Host guidance now makes Jev discretionary, shares versioned canonical fragments across pi/omp/MCP, and reports current conclusions with evidence provenance and material reservations. The pi/omp opt-out documentation hook remains; MCP requires no manual replacement call.
+- Human output is a projection of the typed report. Static/fallback selection and unavailable judgments never acquire fabricated probabilities; cached results are distinct from fresh requests and unknown cost is not zero.
+
+### Fixed
+
+- Historical-only and deleted-file evidence resolution, supplied-file basename precedence and canonical file-count admission without duplicated alias content.
+- Command output reaches bounded passage selection before immutable-evidence budget refusal, including base snapshots and import closure; reports preserve actual command execution/cwd even when later collection fails.
+- Selection reports distinguish unmatched candidate criteria, partial matches, excluded inventory and named conservative-widening triggers from absence of affected tests.
+- Review reports retain documentation completeness/collection reservations and risk/coverage witness diagnostics. Residual absence summaries remain derived observations within the considered inventory, not extra judgments or global coverage claims.
+- Recovery actions preserve the actual evidence/control limitation instructions rather than generic repetition advice.
+- Local-caller reports preserve their independent unsure/abstain bands and matching probabilities; specification drift remains one pointer decision rather than duplicated judgments for every candidate unit.
+- MCP malformed tool arguments remain JSON-RPC invalid-parameter errors, separate from well-formed calls refused by evidence admission.
+- Every judgment stage binds cache identity and serialized admission to its admitted root/base context, including auxiliary command passages. Locate planning reserves that metadata capacity before allocating evidence.
+- Historical selectors use protected base reads for ignored paths, symlinks, non-text content and deleted files; current/base versions share the distinct-file ceiling without bypassing rejected admissions.
+
 ## [0.2.0] - 2026-10-03
 
 ### Added

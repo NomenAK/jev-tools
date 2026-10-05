@@ -29,11 +29,12 @@ export function sectionStateFits(
   goal: string,
   sections: readonly Section[],
   outline = false,
+  maxChars = STATE_MAX_CHARS,
 ): boolean {
   return (
     sections.length < CHOICE_MAX_OPTIONS &&
     JSON.stringify(sectionState(path, goal, sections, outline)).length <=
-      STATE_MAX_CHARS
+      maxChars
   );
 }
 /** Every planned block has at least two sections and fits its full-text refinement budget. */
@@ -41,6 +42,7 @@ export function sectionOutline(
   path: string,
   goal: string,
   sections: readonly Section[],
+  maxChars = STATE_MAX_CHARS,
 ): Section[] {
   const base = JSON.stringify(sectionState(path, goal, [])).length;
   const costs = new Map(
@@ -58,18 +60,18 @@ export function sectionOutline(
   const fits = (items: readonly Section[]) =>
     items.length < CHOICE_MAX_OPTIONS &&
     base + items.reduce((sum, item) => sum + (costs.get(item) ?? 0) + 1, 0) <=
-      STATE_MAX_CHARS;
+      maxChars;
   const groups: Section[][] = [];
   let current: Section[] = [],
     currentSize = base;
   for (const section of sections) {
     const length = (costs.get(section) ?? 0) + 1;
-    if (base + length > STATE_MAX_CHARS) return [];
+    if (base + length > maxChars) return [];
     const owner = section.label.split(".")[0],
       previousOwner = current.at(-1)?.label.split(".")[0];
     if (
       current.length &&
-      (currentSize + length > STATE_MAX_CHARS ||
+      (currentSize + length > maxChars ||
         current.length + 1 >= CHOICE_MAX_OPTIONS ||
         (current.length >= 2 &&
           section.label.includes(".") &&
@@ -131,6 +133,7 @@ export function outlineEvidence(
   path: string,
   goal: string,
   blocks: readonly Section[],
+  maxChars = STATE_MAX_CHARS,
 ): Section[] {
   const overhead = JSON.stringify(
     sectionState(
@@ -139,7 +142,7 @@ export function outlineEvidence(
       blocks.map((block) => ({ ...block, text: "" })),
     ),
   ).length;
-  let remaining = Math.max(0, STATE_MAX_CHARS - overhead);
+  let remaining = Math.max(0, maxChars - overhead);
   const allocations = blocks.map(() => 0);
   let active = blocks.map((_, index) => index);
   while (remaining > 0 && active.length) {

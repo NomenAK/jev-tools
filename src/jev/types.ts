@@ -15,8 +15,19 @@ export type Question =
     }
   | { type: "choice"; instructions: string; criteria: Record<string, string> }
   | { type: "score"; instructions: string; criteria: string[] };
-export type Answer =
-  | { type: "unjudged"; reason: string }
+export type Answer = { source?: "fresh" | "cache" } & (
+  | {
+      type: "unjudged";
+      reason: string;
+      cause?:
+        | "call_budget"
+        | "session_budget"
+        | "provider_context_refusal"
+        | "invalid_response"
+        | "service_unavailable"
+        | "transport_failure"
+        | "cancelled";
+    }
   | { type: "bool"; p: number }
   | {
       type: "choice";
@@ -30,8 +41,10 @@ export type Answer =
       confidence: number;
       legend: Json;
       probabilities: Record<string, number>;
-    };
+    }
+);
 export interface JudgmentMetadata {
+  failureCause?: Extract<Answer, { type: "unjudged" }>["cause"];
   usage?: { inputTokens: number; costUsd: number };
   model?: string;
   calls?: number;
@@ -48,6 +61,8 @@ export interface JudgmentOptions {
   witnesses?: readonly string[];
   cache?: boolean;
   beforeRequest?: (questionCount: number) => Result<object>;
+  /** Structured cause of a denied beforeRequest admission, when established. */
+  admissionCause?: () => "call_budget" | "session_budget";
   /**
    * Awaited before each admission check. Resolves to a release function when
    * it reserved a slot (a session under a USD limit), which the client calls

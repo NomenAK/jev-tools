@@ -14,11 +14,11 @@ Keep limits and thresholds in src/constants.ts. Batch questions for the same evi
 
 Enforce downward import layers, including erased type dependencies:
 
-- core/ imports core/, constants.ts, result.ts and type-only contracts from jev/types.ts.
+- core/ imports core/, constants.ts, result.ts, result-types.ts and type-only contracts from jev/types.ts.
 - presets/ and adapters/ each import their own layer, core/ and those neutral modules; adapters/ does not import presets/ or tools/.
-- jev/ imports its own layer, core/, constants.ts and result.ts.
+- jev/ imports its own layer, core/, constants.ts, result.ts and result-types.ts.
 - texts/ imports its own layer, constants.ts and presets/; it has no external dependencies.
-- constants.ts and result.ts import nothing. Root integration modules and tools/ compose the layers.
+- constants.ts and result-types.ts import nothing. result.ts may import the dependency-free result-types.ts contract. Root integration modules and tools/ compose the layers.
 
 Reject all cycles, including type-only cycles, and nonliteral module loading. Shared contracts belong below their consumers. Pure layers do not import external modules, with explicit core exceptions for pure node:path functions and erased import type contracts from @ast-grep/napi. Inline type specifiers that retain runtime loading do not qualify. Filesystem, process and network modules, direct fetch calls and Node builtin-module loaders are forbidden in the core; import checks are not an exhaustive proof against indirect global effects.
 

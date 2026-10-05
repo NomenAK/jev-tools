@@ -13,4 +13,5 @@ export interface ToolDependencies {
   host: Host;
   runtime: ToolRuntime;
   exec: GitExec;
+  evidenceOrigin?: "host" | "server";
 }

@@ -1,6 +1,9 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "@sinclair/typebox";
-import { canonicalPath } from "../adapters/canonical-path.ts";
+import {
+  resolveEvidenceContext,
+  withEvidenceContext,
+} from "../adapters/evidence-context.ts";
 import { shareGitInventory } from "../adapters/git-inventory.ts";
 import { readLocateFile, scanRange } from "../adapters/locate-file.ts";
 import { loadSyntaxParser } from "../adapters/syntax.ts";
@@ -27,18 +30,34 @@ import {
   type Limitation,
 } from "../core/output.ts";
 import { needsReverse, pointerQuestion, readPointer } from "../core/pointer.ts";
+import {
+  type Action,
+  answerItemFromInput,
+  buildResultReport,
+  type Cause,
+  contextFromEvidence,
+  type Diagnostic,
+  type Item,
+  known,
+  type RawValue,
+  unknown,
+} from "../core/result-report.ts";
 import { type Section, sectionFile } from "../core/sections.ts";
 import type { SyntaxParser } from "../core/units.ts";
 import { interpolate } from "../describe.ts";
 import type { GuideContext } from "../guide.ts";
-import type { Judgment } from "../jev/types.ts";
-import { renderEnvelope } from "../render.ts";
+import type { Answer, Judgment } from "../jev/types.ts";
+import { renderResultReport } from "../render.ts";
 import type { ToolDependencies } from "../runtime.ts";
 import { NOT_CONFIGURED } from "../texts/configuration.ts";
 import { LOCATE_DESCRIPTION } from "../texts/locate.ts";
 
 const parameters = Type.Object(
-  { path: Type.String({ minLength: 1 }), goal: Type.String({ minLength: 1 }) },
+  {
+    root: Type.Optional(Type.String()),
+    path: Type.String({ minLength: 1 }),
+    goal: Type.String({ minLength: 1 }),
+  },
   { additionalProperties: false },
 );
 type LocateArgs = Static<typeof parameters>;
@@ -75,11 +94,97 @@ export function createLocateTool(
       ctx: { cwd: string } & GuideContext,
     ) {
       const client = dependencies.client;
-      const cwd = await canonicalPath(ctx.cwd);
+      const evidence = await resolveEvidenceContext(ctx.cwd, args.root, {
+        exec: execute,
+        signal,
+        origin: dependencies.evidenceOrigin,
+      });
+      const evidenceContext = evidence.context;
+      const cwd = evidence.ok ? evidence.cwd : evidenceContext.authority.path;
       const started = performance.now();
       const exec = shareGitInventory(execute);
       const results: Judgment[] = [];
       const limitations: Limitation[] = [];
+      const context = contextFromEvidence(evidenceContext);
+      const diagnostics: Diagnostic[] = [];
+      const actions: Action[] = [];
+      const auxiliary = {
+        controls: { fresh: 0, cache: 0, notJudged: 0, static: 0 },
+        passages: { fresh: 0, cache: 0, notJudged: 0 },
+      };
+      let primary: Answer | undefined;
+      let control: Answer | undefined;
+      let requiredControl = false;
+      let failureCause: Cause = "invalid_response";
+      const raw = (answer: Answer): RawValue[] =>
+        answer.type === "choice"
+          ? Object.entries(answer.probabilities).map(
+              ([label, probability]) => ({
+                label,
+                value: label,
+                probability: known(probability),
+              }),
+            )
+          : [];
+      const diagnose = (cause: Cause, fact: string, members: string[] = []) => {
+        const id = `d${diagnostics.length + 1}`,
+          actionId = `a${actions.length + 1}`;
+        const code =
+          cause === "invalid_root"
+            ? "correct_context"
+            : cause === "not_configured"
+              ? "configure_client"
+              : cause === "transport_failure" || cause === "service_unavailable"
+                ? "recover_service"
+                : "inspect_native";
+        actions.push({
+          id: actionId,
+          code,
+          target: known(args.path),
+          scope: { kind: "call" },
+          condition:
+            code === "correct_context"
+              ? "If the requested root is incorrect"
+              : code === "recover_service"
+                ? "Only after service recovery is observed"
+                : "If the range decision remains open",
+          instruction:
+            code === "correct_context"
+              ? "Use the exact registered worktree top-level; no fallback was performed."
+              : code === "configure_client"
+                ? "Configure the Jev client or inspect the file natively."
+                : "Read or search the cited file within existing permissions; revisit Jev only with decisive new evidence or materially changed context.",
+          repeatUnchanged: false,
+        });
+        diagnostics.push({
+          id,
+          cause,
+          fact,
+          target: known(
+            cause === "invalid_root" ? (args.root ?? cwd) : args.path,
+          ),
+          origin:
+            cause === "invalid_root" || cause === "forbidden_path"
+              ? "input"
+              : cause === "control_failure"
+                ? "control"
+                : cause === "session_budget"
+                  ? "budget"
+                  : cause === "service_unavailable" ||
+                      cause === "transport_failure" ||
+                      cause === "invalid_response" ||
+                      cause === "provider_context_refusal" ||
+                      cause === "not_configured"
+                    ? "provider"
+                    : "collection",
+          scope: { kind: "call" },
+          effect: "blocking",
+          material: true,
+          omittedMembers: members,
+          memberCount: known(members.length),
+          actionIds: [actionId],
+        });
+      };
       const finish = (input: Omit<EnvelopeInput, "yield">) => {
         const usage = results.reduce(
           (sum, result) => ({
@@ -109,24 +214,182 @@ export function createLocateTool(
             elapsedMs: performance.now() - started,
           },
         });
+        if (input.refusal) diagnose(failureCause, input.refusal);
+        if (input.answers?.[0] && primary?.source)
+          actions.push({
+            id: `a${actions.length + 1}`,
+            code: "inspect_native",
+            target: known(
+              input.answers[0].label === "none"
+                ? args.path
+                : input.answers[0].label,
+            ),
+            scope: { kind: "group", groupIds: ["pointer"] },
+            condition: "If the range decision remains open",
+            instruction:
+              input.answers[0].label === "none"
+                ? "Search elsewhere for the goal; read any cited alternative range if the result is unsure. Do not retry unchanged evidence."
+                : "Read the current primary and alternative ranges; retain uncertainty if no decisive new evidence is available. Do not retry unchanged evidence.",
+            repeatUnchanged: false,
+          });
+        if (
+          !input.refusal &&
+          (!primary?.source || (requiredControl && !control?.source))
+        )
+          diagnose(
+            "invalid_response",
+            "pointer decision lacks established answer provenance or its required control",
+          );
+        const common = {
+          id: "pointer",
+          kind: "pointer" as const,
+          label: args.path,
+          groupId: "pointer",
+          evidence: primary
+            ? [
+                {
+                  target: args.path,
+                  canonicalPath: evidenceContext.effectiveRoot
+                    ? known(
+                        `${evidenceContext.effectiveRoot.path}/${args.path}`,
+                      )
+                    : unknown("file admission not established"),
+                  aliases: [],
+                  side: "current" as const,
+                  revision: context.resolvedBase,
+                },
+              ]
+            : [],
+          diagnosticIds: diagnostics.map((d) => d.id),
+          actionIds: actions.map((a) => a.id),
+        };
+        if (input.answers?.[0]) common.label = input.answers[0].label;
+        const displayed = input.answers?.[0];
+        let item: Item = { ...common, treatment: "not_judged", source: "none" };
+        if (
+          displayed &&
+          primary?.type === "choice" &&
+          primary.source &&
+          (!requiredControl || (control?.type === "choice" && control.source))
+        ) {
+          auxiliary.passages[primary.source]--;
+          item = answerItemFromInput(common, {
+            ...displayed,
+            answer: primary,
+            publicResult: displayed.value?.head ?? primary.choice,
+            reason: [...limitations, ...(input.limitations ?? [])]
+              .map((limit) => limit.fact)
+              .join("; "),
+            rawValues: raw(primary),
+            reportControls:
+              control?.type === "choice" && control.source
+                ? [
+                    {
+                      id: "pointer-order",
+                      kind: "order",
+                      source: control.source,
+                      outcome: displayed.orderDependent
+                        ? "order-dependent"
+                        : "consistent",
+                      rawValues: raw(control),
+                    },
+                  ]
+                : [],
+          });
+        }
+        const report = buildResultReport({
+          tool: "jev_locate_in_file",
+          context,
+          items: [item],
+          diagnostics,
+          actions,
+          metrics: {
+            ...metrics,
+            costUsd: results.every((r) => !r.calls || r.usage !== undefined)
+              ? usage.costUsd
+              : undefined,
+            elapsedMs: performance.now() - started,
+          },
+          auxiliary,
+          total: known(1),
+          refused: Boolean(
+            input.refusal &&
+              (failureCause === "invalid_root" ||
+                failureCause === "forbidden_path" ||
+                failureCause === "outside_inventory" ||
+                failureCause === "group_too_large" ||
+                failureCause === "evidence_too_large"),
+          ),
+        });
         runtime.session.record(envelope);
         runtime.guide.deliver(ctx);
         return {
-          content: [{ type: "text" as const, text: renderEnvelope(envelope) }],
-          details: { results },
+          content: [
+            {
+              type: "text" as const,
+              text: renderResultReport(report, {
+                details: {
+                  lines: [
+                    ...envelope.lines,
+                    {
+                      type: "list" as const,
+                      title: "pointer reservations",
+                      items: [...limitations, ...(input.limitations ?? [])].map(
+                        (limit) => limit.fact,
+                      ),
+                    },
+                    ...(displayed
+                      ? [
+                          {
+                            type: "list" as const,
+                            title: "read ranges",
+                            items: [
+                              ...(displayed.label === "none"
+                                ? []
+                                : [displayed.label]),
+                              ...(displayed.candidates ?? [])
+                                .filter(
+                                  (candidate) => candidate.label !== "none",
+                                )
+                                .map(
+                                  (candidate) =>
+                                    `${candidate.label} (${candidate.value.p})`,
+                                ),
+                            ],
+                          },
+                        ]
+                      : []),
+                  ],
+                },
+              }),
+            },
+          ],
+          details: { results, evidenceContext, result: report },
           ...hostUsage(
             host.isOmp,
             results.some((r) => r.usage) ? usage : undefined,
           ),
         };
       };
+      if (!evidence.ok) {
+        failureCause = evidence.cause ?? "invalid_root";
+        return finish({ refusal: evidence.error });
+      }
+      failureCause = "file_unavailable";
       const file = await readLocateFile(cwd, args.path, signal, exec);
-      if (!file.ok) return finish({ refusal: file.error });
+      if (!file.ok) {
+        failureCause = file.cause ?? "file_unavailable";
+        return finish({ refusal: file.error });
+      }
+      failureCause = "outside_inventory";
       if (file.bytes < LOCATE_MIN_KB * 1000)
         return finish({
           refusal: `small file (${file.lines} lines): read it directly`,
         });
-      if (!client) return finish({ refusal: NOT_CONFIGURED });
+      if (!client) {
+        failureCause = "not_configured";
+        return finish({ refusal: NOT_CONFIGURED });
+      }
       let sections: Section[];
       if (file.kind === "whole") {
         const parser = await loadParser();
@@ -169,8 +432,66 @@ export function createLocateTool(
         });
       }
       const sectionCount = sections.length;
+      context.inventories.push({
+        id: "sections",
+        kind: "sections",
+        rules: [
+          file.kind === "whole"
+            ? "declarations or heuristic sections from complete file"
+            : "bounded window outline",
+        ],
+        restrictions: [
+          args.path,
+          ...sections.map(
+            (section) => `${section.id}: ${section.start}-${section.end}`,
+          ),
+        ],
+        discovered: known(sectionCount),
+        considered: known(sectionCount),
+        scopeRestricted: true,
+        criteria: [],
+      });
+      if (!sectionCount) {
+        diagnose(
+          "collection_empty",
+          "no sections discovered; no pointer judgment",
+        );
+        return finish({});
+      }
+      failureCause = "group_too_large";
       const judge = async (candidates: Section[], outline = false) => {
-        const state = sectionState(args.path, args.goal, candidates, outline);
+        primary = undefined;
+        control = undefined;
+        requiredControl = false;
+        const inventory = context.inventories.find(
+          (inventory) => inventory.id === "pointer-candidates",
+        );
+        const restricted = {
+          id: "pointer-candidates",
+          kind: "sections" as const,
+          rules: ["actual candidates for the latest pointer stage"],
+          restrictions: [
+            args.path,
+            ...candidates.map(
+              (section) => `${section.id}: ${section.start}-${section.end}`,
+            ),
+          ],
+          discovered: known(candidates.length),
+          considered: known(candidates.length),
+          scopeRestricted: true,
+          criteria: [],
+        };
+        if (inventory) Object.assign(inventory, restricted);
+        else context.inventories.push(restricted);
+        const state = withEvidenceContext(
+          sectionState(args.path, args.goal, candidates, outline),
+          evidenceContext,
+        );
+        if (JSON.stringify(state).length > STATE_MAX_CHARS)
+          return {
+            ok: false as const,
+            error: `required evidence exceeds STATE_MAX_CHARS=${STATE_MAX_CHARS}`,
+          };
         const ask = async (reverse: boolean) => {
           const result = await client.judge(
             state,
@@ -186,12 +507,27 @@ export function createLocateTool(
               signal,
               ...runtime.session.requestGate(),
               beforeRequest: (n) => runtime.session.admit(n),
+              admissionCause: () => "session_budget",
               onUsage: (usage) => runtime.session.recordUsage(usage),
             },
           );
           results.push(result);
+          if (!result.ok) {
+            failureCause = result.failureCause ?? "invalid_response";
+            if (reverse) auxiliary.controls.notJudged++;
+            else auxiliary.passages.notJudged++;
+          }
           if (!result.ok) return { ok: false as const, error: result.error };
           const answer = result.answers.pointer;
+          if (reverse) control = answer;
+          else primary = answer;
+          if (answer?.type === "unjudged")
+            failureCause = answer.cause ?? "invalid_response";
+          if (answer?.type === "choice" && answer.source) {
+            if (reverse) auxiliary.controls[answer.source]++;
+            else auxiliary.passages[answer.source]++;
+          } else if (reverse) auxiliary.controls.notJudged++;
+          else auxiliary.passages.notJudged++;
           return answer?.type === "choice"
             ? { ok: true as const, probabilities: answer.probabilities }
             : {
@@ -206,25 +542,51 @@ export function createLocateTool(
         if (!first.ok) return first;
         let pointer = readPointer(first.probabilities);
         if (needsReverse(first.probabilities, candidates.length)) {
+          requiredControl = true;
           const second = await ask(true);
-          if (!second.ok) return second;
+          if (!second.ok) {
+            if (failureCause === "invalid_response")
+              failureCause = "control_failure";
+            return second;
+          }
           pointer = readPointer(first.probabilities, second.probabilities);
         }
         return { ok: true as const, ...pointer };
       };
+      const emptyState = sectionState(args.path, args.goal, []);
+      const contextChars =
+        JSON.stringify(withEvidenceContext(emptyState, evidenceContext))
+          .length - JSON.stringify(emptyState).length;
+      const evidenceMaxChars = STATE_MAX_CHARS - contextChars;
       const fits = (candidates: Section[]) =>
-        sectionStateFits(args.path, args.goal, candidates);
+        sectionStateFits(
+          args.path,
+          args.goal,
+          candidates,
+          false,
+          evidenceMaxChars,
+        );
       const twoStage = file.kind === "outline" || !fits(sections);
       let planUnsure = false;
       if (twoStage) {
-        const outline = sectionOutline(args.path, args.goal, sections);
+        const outline = sectionOutline(
+          args.path,
+          args.goal,
+          sections,
+          evidenceMaxChars,
+        );
         if (outline.length < 2 || outline.length >= CHOICE_MAX_OPTIONS)
           return finish({
             refusal:
               "No usable multi-section plan fits the budget; use grep or read directly.",
           });
-        const evidence = outlineEvidence(args.path, args.goal, outline);
-        if (!sectionStateFits(args.path, args.goal, evidence))
+        const evidence = outlineEvidence(
+          args.path,
+          args.goal,
+          outline,
+          evidenceMaxChars,
+        );
+        if (!fits(evidence))
           return finish({
             refusal: "Block plan exceeds the state budget; use grep.",
           });
@@ -274,7 +636,10 @@ export function createLocateTool(
         }
         if (file.kind === "outline") {
           const selected = await scanRange(cwd, args.path, block, signal, exec);
-          if (!selected.ok) return finish({ refusal: selected.error });
+          if (!selected.ok) {
+            failureCause = selected.cause ?? "file_unavailable";
+            return finish({ refusal: selected.error });
+          }
           const lines = selected.text.split("\n");
           sections = sections
             .filter((s) => s.start >= block.start && s.end <= block.end)
@@ -334,7 +699,7 @@ export function createLocateTool(
       );
       if (!displayed)
         return finish({ refusal: "Pointer probabilities missing." });
-      const { primary, band, candidates } = displayed;
+      const { primary: displayedPrimary, band, candidates } = displayed;
       if (band === "unsure" || head.id === "none")
         limitations.push({
           fact:
@@ -346,7 +711,7 @@ export function createLocateTool(
       return finish({
         answers: [
           {
-            ...primary,
+            ...displayedPrimary,
             band,
             orderDependent: pointer.orderDependent,
             candidates,
@@ -354,7 +719,7 @@ export function createLocateTool(
         ],
         lines:
           head.id !== "none"
-            ? [{ type: "list", title: "read", items: [primary.label] }]
+            ? [{ type: "list", title: "read", items: [displayedPrimary.label] }]
             : [],
         limitations: [
           {

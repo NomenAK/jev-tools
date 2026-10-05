@@ -208,7 +208,12 @@ test("every verify claim remains visible when issues or twin are unjudged", () =
     q6: { type: "bool", p: 0.98 },
   });
   assert.equal(lines.length, 2);
-  assert.ok(lines.every((l) => l.band === "unsure"));
+  assert.ok(
+    lines.every(
+      (l) =>
+        l.unjudged === true && l.band === undefined && l.value === undefined,
+    ),
+  );
   assert.match(lines[0]?.label ?? "", /The file validates tokens/);
   assert.match(lines[0]?.reason ?? "", /twin.*missing twin.*auth.ts/);
   assert.match(lines[1]?.reason ?? "", /issues.*missing issues/);

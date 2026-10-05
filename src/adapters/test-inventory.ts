@@ -33,6 +33,7 @@ export async function collectTestInventory(
   if (root.code !== 0 || root.killed)
     return {
       ok: false,
+      cause: signal?.aborted ? "cancelled" : "git_failure",
       error: root.stderr || "Cannot identify repository root.",
     };
   cwd = root.stdout.replace(/\n$/, "");
@@ -51,6 +52,7 @@ export async function collectTestInventory(
   if (listed.code !== 0 || listed.killed)
     return {
       ok: false,
+      cause: signal?.aborted ? "cancelled" : "git_failure",
       error: listed.stderr || "Cannot inventory repository files.",
     };
   const ignored = await exec(
@@ -61,6 +63,7 @@ export async function collectTestInventory(
   if (ignored.code !== 0 || ignored.killed)
     return {
       ok: false,
+      cause: signal?.aborted ? "cancelled" : "git_failure",
       error: ignored.stderr || "Cannot identify ignored tracked files.",
     };
   const excluded = new Set(ignored.stdout.split("\0").filter(Boolean));

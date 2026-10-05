@@ -3,9 +3,13 @@ import { resolve } from "node:path";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "@sinclair/typebox";
 import { collectAskFiles } from "../adapters/ask-files.ts";
-import { canonicalPath } from "../adapters/canonical-path.ts";
+import {
+  resolveEvidenceContext,
+  withEvidenceContext,
+} from "../adapters/evidence-context.ts";
 import { shareGitInventory } from "../adapters/git-inventory.ts";
 import { hostUsage } from "../adapters/usage.ts";
+import { STATE_MAX_CHARS } from "../constants.ts";
 import { compileAsks, readAsks, reverseQuestions } from "../core/asks.ts";
 import { checkIntegrity } from "../core/integrity.ts";
 import type {
@@ -15,10 +19,22 @@ import type {
   EnvelopeInput,
 } from "../core/output.ts";
 import { buildEnvelope } from "../core/output.ts";
+import {
+  type Action,
+  answerItemFromInput,
+  buildResultReport,
+  type Cause,
+  contextFromEvidence,
+  type Diagnostic,
+  type Item,
+  known,
+  type ResultReportV1,
+  unknown,
+} from "../core/result-report.ts";
 import { interpolate } from "../describe.ts";
 import type { GuideContext } from "../guide.ts";
 import type { Answer, Judgment, JudgmentMetadata } from "../jev/types.ts";
-import { renderEnvelope } from "../render.ts";
+import { renderResultReport } from "../render.ts";
 import type { ToolDependencies } from "../runtime.ts";
 import { ASK_FILES_DESCRIPTION } from "../texts/ask-files.ts";
 import { NOT_CONFIGURED } from "../texts/configuration.ts";
@@ -26,6 +42,7 @@ import { asksParameter } from "./ask-schema.ts";
 
 export const askFilesParameters = Type.Object(
   {
+    root: Type.Optional(Type.String()),
     paths: Type.Array(Type.String({ minLength: 1 }), { minItems: 1 }),
     asks: asksParameter("files"),
     max_calls: Type.Optional(Type.Integer({ minimum: 0 })),
@@ -42,6 +59,7 @@ export interface AskFilesDetails {
   files: FileJudgment[];
   skipped: string[];
   envelope: Envelope;
+  result: ResultReportV1;
 }
 export function createAskFilesTool(dependencies: ToolDependencies) {
   const { host, runtime, exec: execute } = dependencies;
@@ -68,9 +86,74 @@ export function createAskFilesTool(dependencies: ToolDependencies) {
       ctx: { cwd: string } & GuideContext,
     ) {
       const client = dependencies.client;
-      const cwd = await canonicalPath(ctx.cwd);
+      const evidence = await resolveEvidenceContext(ctx.cwd, args.root, {
+        exec: execute,
+        signal,
+        origin: dependencies.evidenceOrigin,
+      });
+      const evidenceContext = evidence.context;
+      const cwd = evidence.ok ? evidence.cwd : evidenceContext.authority.path;
       const started = performance.now();
       const exec = shareGitInventory(execute);
+      const plan = compileAsks(args.asks, { surface: "files" });
+      let refusalCause: Cause = "invalid_arguments";
+      let collectedPaths: string[] | undefined;
+      let costKnown = true;
+      const reportItems: Item[] = [];
+      const diagnostics: Diagnostic[] = [];
+      const actions: Action[] = [];
+      const auxiliary = {
+        controls: { fresh: 0, cache: 0, notJudged: 0, static: 0 },
+        passages: { fresh: 0, cache: 0, notJudged: 0 },
+      };
+      const diagnose = (
+        cause: Cause,
+        fact: string,
+        scope: Diagnostic["scope"],
+        target?: string,
+      ) => {
+        const id = `diagnostic:${diagnostics.length}`,
+          actionId = `action:${actions.length}`;
+        actions.push({
+          id: actionId,
+          code:
+            cause === "invalid_root"
+              ? "correct_context"
+              : cause === "not_configured"
+                ? "configure_client"
+                : "inspect_native",
+          target:
+            target === undefined
+              ? unknown("target not established")
+              : known(target),
+          scope,
+          condition:
+            "Only after correcting context or supplying materially new evidence",
+          instruction:
+            "Read the admitted files natively; do not repeat the unchanged Jev call.",
+          repeatUnchanged: false,
+        });
+        diagnostics.push({
+          id,
+          cause,
+          fact,
+          target:
+            target === undefined
+              ? unknown("target not established")
+              : known(target),
+          origin:
+            cause === "call_budget" || cause === "session_budget"
+              ? "budget"
+              : "collection",
+          scope,
+          effect: "blocking",
+          material: true,
+          omittedMembers: [],
+          memberCount: known(0),
+          actionIds: [actionId],
+        });
+        return { diagnosticIds: [id], actionIds: [actionId] };
+      };
       const totals = {
         calls: 0,
         questions: 0,
@@ -88,31 +171,153 @@ export function createAskFilesTool(dependencies: ToolDependencies) {
         });
         runtime.session.record(envelope);
         runtime.guide.deliver(ctx);
+        if (!reportItems.length && !diagnostics.length)
+          diagnose(
+            input.refusal ? refusalCause : "collection_empty",
+            input.refusal ?? "No file-question results collected",
+            { kind: "call" },
+          );
+        if (!reportItems.length && collectedPaths && plan.ok)
+          for (const path of collectedPaths)
+            for (const reading of plan.readings)
+              reportItems.push({
+                id: `${path}:${reading.id}`,
+                kind: "file_question",
+                label: `${path}  ${reading.label}`,
+                groupId: `${path}:group:${plan.groups.findIndex((group) => group.includes(reading.id))}`,
+                evidence: [
+                  {
+                    target: path,
+                    canonicalPath: known(resolve(cwd, path)),
+                    aliases: [],
+                    side: "current",
+                    revision: unknown("working tree evidence"),
+                  },
+                ],
+                diagnosticIds: diagnostics.map((diagnostic) => diagnostic.id),
+                actionIds: actions.map((action) => action.id),
+                treatment: "not_judged",
+                source: "none",
+              });
+        for (const limitation of input.limitations ?? []) {
+          diagnose(
+            "evidence_limit",
+            limitation.fact,
+            { kind: "call" },
+            limitation.path,
+          );
+          const diagnostic = diagnostics.at(-1);
+          if (diagnostic) diagnostic.effect = "reservation";
+        }
+        const report = buildResultReport({
+          tool: "jev_ask_files",
+          context: contextFromEvidence(evidenceContext, {
+            inventories: collectedPaths
+              ? [
+                  {
+                    id: "files",
+                    kind: "repository",
+                    rules: [
+                      "Requested paths expanded with admission and pruning",
+                    ],
+                    restrictions: args.paths,
+                    discovered: unknown(
+                      "collector does not expose pre-pruning candidate count",
+                    ),
+                    considered: known(collectedPaths.length),
+                    scopeRestricted: true,
+                    criteria: [],
+                  },
+                ]
+              : [],
+          }),
+          items: reportItems,
+          diagnostics,
+          actions,
+          metrics: {
+            ...totals,
+            costUsd: costKnown && collectedPaths ? totals.costUsd : undefined,
+            elapsedMs: performance.now() - started,
+          },
+          auxiliary,
+          total:
+            collectedPaths && plan.ok
+              ? known(collectedPaths.length * plan.readings.length)
+              : unknown("file-question inventory not collected"),
+          refused: !!input.refusal && refusalCause !== "not_configured",
+        });
         const usage = hostUsage(host.isOmp, {
           inputTokens: totals.inputTokens,
           costUsd: totals.costUsd,
         });
         return {
-          content: [{ type: "text" as const, text: renderEnvelope(envelope) }],
-          details: { files: records, skipped, envelope },
+          content: [
+            {
+              type: "text" as const,
+              text: renderResultReport(report, { details: envelope }),
+            },
+          ],
+          details: {
+            files: records,
+            skipped,
+            envelope,
+            evidenceContext,
+            result: report,
+          },
           ...usage,
         };
       };
-      if (!client) return finish({ refusal: NOT_CONFIGURED });
-      const plan = compileAsks(args.asks, { surface: "files" });
+      if (!evidence.ok) {
+        refusalCause = evidence.cause ?? "invalid_root";
+        return finish({ refusal: evidence.error });
+      }
       if (!plan.ok) return finish({ refusal: plan.error });
+      if (!client) {
+        refusalCause = "not_configured";
+        return finish({ refusal: NOT_CONFIGURED });
+      }
       const collected = await collectAskFiles(cwd, args.paths, signal, exec);
-      if (!collected.ok) return finish({ refusal: collected.error });
+      if (!collected.ok) {
+        refusalCause = collected.cause ?? "file_unavailable";
+        return finish({ refusal: collected.error });
+      }
+      collectedPaths = collected.files.map((file) => file.path);
       skipped = collected.skipped;
+      for (const skippedPath of skipped)
+        diagnose("collection_omitted", skippedPath, {
+          kind: "inventory",
+          inventoryIds: ["files"],
+        });
       if (!collected.files.length && skipped.length)
         return finish({
           refusal: `No readable evidence: ${skipped.join("; ")}`,
         });
+      const states = collected.files.map((file) => ({
+        file,
+        state: withEvidenceContext(
+          { path: file.path, content: file.content },
+          evidenceContext,
+        ),
+      }));
+      if (
+        states.some(
+          ({ state }) => JSON.stringify(state).length > STATE_MAX_CHARS,
+        )
+      ) {
+        refusalCause = "evidence_too_large";
+        return finish({
+          refusal: `required evidence exceeds STATE_MAX_CHARS=${STATE_MAX_CHARS}`,
+        });
+      }
       let sent = 0;
       let budget: BudgetRefusal | undefined;
       const options = {
         signal,
         ...runtime.session.requestGate(),
+        admissionCause: () =>
+          budget?.kind === "session"
+            ? ("session_budget" as const)
+            : ("call_budget" as const),
         beforeRequest: (count: number) => {
           if (args.max_calls !== undefined && sent >= args.max_calls) {
             budget = {
@@ -139,17 +344,17 @@ export function createAskFilesTool(dependencies: ToolDependencies) {
         totals.cacheRequests += result.cacheRequests ?? 0;
         totals.inputTokens += result.usage?.inputTokens ?? 0;
         totals.costUsd += result.usage?.costUsd ?? 0;
+        if (!result.usage && result.calls !== 0) costKnown = false;
       };
       const rows = await Promise.all(
-        collected.files.map(async (file) => {
-          const state = { path: file.path, content: file.content };
+        states.map(async ({ file, state }) => {
           const integrity = checkIntegrity(state, plan.asks, [
             {
               ...file.identity,
-              insertedPath: resolve(cwd, state.path),
-              content: state.content,
+              insertedPath: resolve(cwd, file.path),
+              content: file.content,
               insertedSha256: createHash("sha256")
-                .update(state.content)
+                .update(file.content)
                 .digest("hex"),
             },
           ]);
@@ -191,6 +396,93 @@ export function createAskFilesTool(dependencies: ToolDependencies) {
       const unchecked: string[] = [];
       const unjudged: NonNullable<EnvelopeInput["unjudged"]>[number][] = [];
       for (const row of rows) {
+        const readings = plan.readings;
+        for (const [index, reading] of readings.entries()) {
+          const groupId = `${row.file.path}:group:${plan.groups.findIndex((group) => group.includes(reading.id))}`;
+          const common = {
+            id: `${row.file.path}:${reading.id}`,
+            kind: "file_question" as const,
+            label: `${row.file.path}  ${reading.label}`,
+            groupId,
+            evidence: [
+              {
+                target: row.file.path,
+                canonicalPath: known(resolve(cwd, row.file.path)),
+                aliases: [],
+                side: "current" as const,
+                revision: unknown("working tree evidence"),
+              },
+            ],
+            diagnosticIds: [] as string[],
+            actionIds: [] as string[],
+          };
+          const answer = row.answers[index];
+          if (
+            answer &&
+            !answer.unjudged &&
+            (answer.source || answer.answer?.source)
+          )
+            reportItems.push(
+              answerItemFromInput(
+                common,
+                row.integrity.controls.length
+                  ? {
+                      ...answer,
+                      band: "unsure",
+                      reason: row.integrity.controls
+                        .map((control) => control.fact)
+                        .join("; "),
+                    }
+                  : answer,
+              ),
+            );
+          else {
+            const raw = row.initial.ok
+              ? row.initial.answers[reading.id]
+              : undefined;
+            const cause =
+              raw?.type === "unjudged" ? raw.cause : row.initial.failureCause;
+            const links = diagnose(
+              cause ??
+                (budget
+                  ? budget.kind === "session"
+                    ? "session_budget"
+                    : "call_budget"
+                  : "control_failure"),
+              answer?.reason ??
+                (row.initial.ok
+                  ? "Required group incomplete or response provenance not established"
+                  : row.initial.error),
+              { kind: "group", groupIds: [groupId] },
+              row.file.path,
+            );
+            reportItems.push({
+              ...common,
+              ...links,
+              treatment: "not_judged",
+              source: "none",
+            });
+          }
+          for (const id of [
+            reading.twin,
+            ...Object.values(reading.controls ?? {}),
+          ].filter((id): id is string => !!id)) {
+            const control = row.initial.ok
+              ? row.initial.answers[id]
+              : undefined;
+            if (control && control.type !== "unjudged" && control.source)
+              auxiliary.controls[control.source]++;
+            else auxiliary.controls.notJudged++;
+          }
+          const reverse = row.reversed?.ok
+            ? row.reversed.answers[reading.id]
+            : undefined;
+          if (row.reversed) {
+            if (reverse && reverse.type !== "unjudged" && reverse.source)
+              auxiliary.controls[reverse.source]++;
+            else auxiliary.controls.notJudged++;
+          }
+        }
         records.push({
           path: row.file.path,
           initial: row.initial,
@@ -201,7 +493,7 @@ export function createAskFilesTool(dependencies: ToolDependencies) {
           unjudged.push({
             label: row.file.path,
             reason: row.initial.error,
-            next: "read the file or retry",
+            next: "read the supplied file natively; a new Jev call needs materially changed evidence or recovered service",
           });
           continue;
         }

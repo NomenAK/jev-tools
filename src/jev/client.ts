@@ -232,10 +232,19 @@ export function createJevClient(
           options.onUsage?.(next.usage);
         }
       };
-      const missing = (ids: readonly string[], reason: string) => {
+      let stoppedCause: Extract<Answer, { type: "unjudged" }>["cause"];
+      const missing = (
+        ids: readonly string[],
+        reason: string,
+        cause: Extract<Answer, { type: "unjudged" }>["cause"] = stoppedCause,
+      ) => {
         const batchAnswers = Object.fromEntries(
-          ids.map((id) => [id, { type: "unjudged" as const, reason }]),
+          ids.map((id) => [
+            id,
+            { type: "unjudged" as const, reason, ...(cause ? { cause } : {}) },
+          ]),
         );
+        if (cause) meta.failureCause ??= cause;
         for (const [id, answer] of Object.entries(batchAnswers))
           if (!witnessSet.has(id) || !answers[id]) answers[id] = answer;
         meta.batches?.push({ questionIds: [...ids], answers: batchAnswers });
@@ -281,6 +290,7 @@ export function createJevClient(
               // must not replace the token refusal with a budget reason.
               if (diagnostic) return;
               stopped = admission.error;
+              stoppedCause = options.admissionCause?.();
               missing(ids, stopped);
               return;
             }
@@ -322,12 +332,14 @@ export function createJevClient(
               if (diagnostic) {
                 stopped =
                   "Jev max_tokens_exceeded: state too large for a single question; remaining questions not judged.";
+                stoppedCause = "provider_context_refusal";
                 return;
               }
               if (ids.length === 1) {
                 missing(
                   ids,
                   "Jev max_tokens_exceeded: state too large for a single question; question not judged.",
+                  "provider_context_refusal",
                 );
                 return;
               }
@@ -357,7 +369,7 @@ export function createJevClient(
               const split = splitGroups(groups);
               if (split.ok)
                 await Promise.all(split.halves.map((half) => send(half)));
-              else missing(ids, split.error);
+              else missing(ids, split.error, "provider_context_refusal");
               return;
             }
             if (response.ok && isRecord(body)) {
@@ -366,7 +378,12 @@ export function createJevClient(
               const batchAnswers = Object.fromEntries(
                 ids.map((id) => [
                   id,
-                  normalize(raw[id], selected[id] as Question),
+                  (() => {
+                    const answer = normalize(raw[id], selected[id] as Question);
+                    return answer.type === "unjudged"
+                      ? { ...answer, cause: "invalid_response" as const }
+                      : { ...answer, source: "fresh" as const };
+                  })(),
                 ]),
               );
               meta.batches?.push({ questionIds: ids, answers: batchAnswers });
@@ -416,7 +433,7 @@ export function createJevClient(
             ) {
               const reason = `Jev HTTP 429, retry after ${retryAfter} s`;
               failure ??= reason;
-              missing(ids, reason);
+              missing(ids, reason, "service_unavailable");
               return;
             }
             const reason = response.ok
@@ -433,7 +450,11 @@ export function createJevClient(
               failure ??= reason;
               if (response.status === 401 || response.status === 403)
                 stopped = reason;
-              missing(ids, reason);
+              missing(
+                ids,
+                reason,
+                response.ok ? "invalid_response" : "service_unavailable",
+              );
               return;
             }
             if (Number.isFinite(retryAfter) && retryAfter >= 0)
@@ -445,7 +466,11 @@ export function createJevClient(
             const reason = `Jev request failed: ${String(error).replaceAll(config.apiKey, "[redacted]")}`;
             if (options.signal?.aborted || attempt === REQUEST_ATTEMPTS - 1) {
               failure ??= reason;
-              missing(ids, reason);
+              missing(
+                ids,
+                reason,
+                options.signal?.aborted ? "cancelled" : "transport_failure",
+              );
               return;
             }
           } finally {
@@ -458,7 +483,11 @@ export function createJevClient(
           } catch (error) {
             const reason = `Jev request failed: ${String(error).replaceAll(config.apiKey, "[redacted]")}`;
             failure ??= reason;
-            missing(ids, reason);
+            missing(
+              ids,
+              reason,
+              options.signal?.aborted ? "cancelled" : "transport_failure",
+            );
             return;
           }
         }
@@ -473,13 +502,19 @@ export function createJevClient(
             )
               return true;
             for (const id of group) {
-              answers[id] = structuredClone(
-                cache.get(keys.get(id) as string) as Answer,
-              );
+              answers[id] = {
+                ...structuredClone(cache.get(keys.get(id) as string) as Answer),
+                source: "cache",
+              };
               meta.cacheHits = (meta.cacheHits ?? 0) + 1;
             }
-            const observedWitnesses = structuredClone(
-              witnessCache.get(witnessKey(group)) ?? {},
+            const observedWitnesses = Object.fromEntries(
+              Object.entries(
+                structuredClone(witnessCache.get(witnessKey(group)) ?? {}),
+              ).map(([id, answer]) => [
+                id,
+                { ...answer, source: "cache" as const },
+              ]),
             );
             for (const [id, answer] of Object.entries(observedWitnesses)) {
               if (!answers[id]) {
@@ -495,9 +530,12 @@ export function createJevClient(
                   id,
                   witnessSet.has(id)
                     ? (observedWitnesses[id] as Answer)
-                    : structuredClone(
-                        cache.get(keys.get(id) as string) as Answer,
-                      ),
+                    : {
+                        ...structuredClone(
+                          cache.get(keys.get(id) as string) as Answer,
+                        ),
+                        source: "cache" as const,
+                      },
                 ]),
               ),
             });

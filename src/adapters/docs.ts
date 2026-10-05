@@ -37,6 +37,7 @@ export async function collectDocsInventory(
   if (root.code || root.killed)
     return {
       ok: false,
+      cause: signal?.aborted ? "cancelled" : "git_failure",
       error: root.stderr.trim() || "Repository root not found.",
     };
   cwd = root.stdout.trim();
@@ -48,6 +49,7 @@ export async function collectDocsInventory(
   if (list.code || list.killed)
     return {
       ok: false,
+      cause: signal?.aborted ? "cancelled" : "git_failure",
       error: list.stderr.trim() || "Unable to inventory tracked files.",
     };
   const tracked = new Set(list.stdout.split("\0").filter(Boolean));

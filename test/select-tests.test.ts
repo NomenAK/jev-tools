@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 import { collectTestInventory } from "../src/adapters/test-inventory.ts";
+import type { ResultReportV1 } from "../src/core/result-report.ts";
 import { Guide } from "../src/guide.ts";
 import { detectHost } from "../src/host.ts";
 import { createJevClient } from "../src/jev/client.ts";
@@ -87,6 +88,28 @@ function dependencies(client: JevClient) {
     },
   };
 }
+function assertUncertainAbsence(result: ResultReportV1): void {
+  assert.ok(
+    result.diagnostics.some(
+      (diagnostic) => diagnostic.cause === "control_failure",
+    ),
+  );
+  assert.ok(
+    result.items.some(
+      (item) =>
+        item.id.startsWith("coverage:") &&
+        (item.treatment === "not_judged" ||
+          (item.treatment === "judged" && item.judgment.band === "unsure")),
+    ),
+  );
+  assert.ok(
+    result.diagnostics.some(
+      (diagnostic) =>
+        diagnostic.cause === "collection_omitted" &&
+        diagnostic.scope.kind === "item",
+    ),
+  );
+}
 test("tracked ignored invalid workspace manifests cannot silently skip local bare imports", async () => {
   const cwd = await fixture();
   try {
@@ -156,9 +179,13 @@ test("tracked ignored invalid workspace manifests cannot silently skip local bar
         );
       }),
     );
-    assert.match(
-      result.content[0]?.text ?? "",
-      /unresolved.*test\/money\.test\.js \(broken\)/,
+    assert.ok(
+      result.details.result.diagnostics.some(
+        (diagnostic) =>
+          diagnostic.cause === "dynamic_dependency" &&
+          diagnostic.target.status === "known" &&
+          diagnostic.target.value === "test/money.test.js",
+      ),
     );
     assert.match(
       result.content[0]?.text ?? "",
@@ -191,13 +218,17 @@ test("missing Vitest lockfiles do not turn a residual verdict into unsure", asyn
           answers: Object.fromEntries(
             Object.entries(questions).map(([id, question]) => {
               if (question.type !== "choice")
-                return [id, { type: "bool", p: 0.01 }];
+                return [
+                  id,
+                  { type: "bool", source: "fresh" as const, p: 0.01 },
+                ];
               const choice = Object.keys(question.criteria)[0];
               assert.ok(choice);
               return [
                 id,
                 {
                   type: "choice",
+                  source: "fresh" as const,
                   choice,
                   confidence: 0.99,
                   probabilities: { [choice]: 0.99, none: 0.01 },
@@ -217,12 +248,21 @@ test("missing Vitest lockfiles do not turn a residual verdict into unsure", asyn
       undefined,
       { cwd },
     );
-    const text = result.content[0]?.text;
-    assert.ok(text);
-    assert.match(text, /^changed, run by no discovered test: unused/m);
-    assert.doesNotMatch(
-      text,
-      /unsure {2}changed, run by no discovered test|unreadable:/,
+    assert.ok(
+      result.details.result.diagnostics.some(
+        (diagnostic) =>
+          diagnostic.target.status === "known" &&
+          diagnostic.target.value === "src/money.js" &&
+          diagnostic.effect === "reservation",
+      ),
+    );
+    assert.ok(
+      result.details.result.items
+        .filter((item) => item.id.startsWith("coverage:"))
+        .every(
+          (item) =>
+            item.treatment === "judged" && item.judgment.band === "verdict",
+        ),
     );
   } finally {
     await rm(cwd, { recursive: true, force: true });
@@ -243,13 +283,15 @@ test("selection sees unchanged intermediates, skips unreachable tests and checks
         ok: true,
         answers: Object.fromEntries(
           Object.entries(questions).map(([id, q]) => {
-            if (q.type !== "choice") return [id, { type: "bool", p: 0.01 }];
+            if (q.type !== "choice")
+              return [id, { type: "bool", source: "fresh" as const, p: 0.01 }];
             const choice = Object.keys(q.criteria)[0];
             assert.ok(choice);
             return [
               id,
               {
                 type: "choice",
+                source: "fresh" as const,
                 choice,
                 confidence: 0.99,
                 probabilities: { [choice]: 0.99, none: 0.01 },
@@ -270,16 +312,29 @@ test("selection sees unchanged intermediates, skips unreachable tests and checks
       undefined,
       { cwd },
     );
-    const text = result.content[0]?.text;
-    assert.ok(text);
-    assert.match(
-      text,
-      /test\/money\.test\.js: invoice total = runs money \(0\.99\)/,
+    assert.ok(
+      result.details.result.items.some(
+        (item) =>
+          item.label === "test/money.test.js: invoice total" &&
+          item.treatment === "judged" &&
+          item.selection?.selected,
+      ),
     );
-    assert.doesNotMatch(text, /fallback: all|unjudged|other\.test\.js.*runs/);
-    assert.match(
-      text,
-      /changed, run by no (?:discovered )?test.*unused|unused.*changed, run by no/,
+    assert.ok(
+      result.details.result.items.some(
+        (item) =>
+          item.label === "test/other.test.js: unrelated" &&
+          item.treatment === "static" &&
+          !item.selection?.selected,
+      ),
+    );
+    assert.ok(
+      result.details.result.diagnostics.some(
+        (diagnostic) =>
+          diagnostic.target.status === "known" &&
+          diagnostic.target.value === "src/money.js" &&
+          diagnostic.effect === "reservation",
+      ),
     );
     assert.ok(
       states.some((state) =>
@@ -301,12 +356,14 @@ test("selection sees unchanged intermediates, skips unreachable tests and checks
       undefined,
       { cwd },
     );
-    const filteredText = filtered.content[0]?.text;
-    assert.ok(filteredText);
-    assert.match(
-      filteredText,
-      /test\/money\.test\.js: invoice total = runs money/,
+    assert.ok(
+      filtered.details.result.items.some(
+        (item) =>
+          item.label === "test/money.test.js: invoice total" &&
+          item.selection?.selected,
+      ),
     );
+    const filteredText = filtered.content[0]?.text ?? "";
     assert.match(filteredText, /command: node --test test\/money\.test\.js\n/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
@@ -370,9 +427,14 @@ test("unavailable Jev selects all candidates, while max_calls zero reports unjud
       undefined,
       { cwd },
     );
-    const fallbackText = result.content[0]?.text;
-    assert.ok(fallbackText);
-    assert.match(fallbackText, /fallback: all/);
+    assert.ok(
+      result.details.result.items.some(
+        (item) =>
+          item.selection?.reason === "conservative_fallback" &&
+          item.selection.selected,
+      ),
+    );
+    assert.equal(result.details.result.accounting.requestedResults.fresh, 0);
     const capped = await createSelectTestsTool(dependencies(client)).execute(
       "2",
       { base: "HEAD", max_calls: 0, witnesses: "off" },
@@ -380,11 +442,13 @@ test("unavailable Jev selects all candidates, while max_calls zero reports unjud
       undefined,
       { cwd },
     );
-    const cappedText = capped.content[0]?.text;
-    assert.ok(cappedText);
-    assert.match(cappedText, /unjudged/);
-    assert.doesNotMatch(cappedText, /^changed, run by no/m);
-    assert.match(cappedText, /run:.*money\.test\.js/);
+    assert.ok(
+      capped.details.result.items.some(
+        (item) => item.treatment === "not_judged" && item.selection?.selected,
+      ),
+    );
+    assert.equal(capped.details.result.accounting.requestedResults.fresh, 0);
+    assert.match(capped.content[0]?.text ?? "", /run:.*money\.test\.js/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
@@ -408,11 +472,12 @@ test("tracked test file beyond state budget is judged in complete scenario slice
             q.type === "choice"
               ? {
                   type: "choice",
+                  source: "fresh" as const,
                   choice: "u001",
                   confidence: 1,
                   probabilities: { u001: 1, none: 0 },
                 }
-              : { type: "bool", p: 1 },
+              : { type: "bool", source: "fresh" as const, p: 1 },
           ]),
         ),
         calls: 1,
@@ -443,10 +508,15 @@ test("tracked test file beyond state budget is judged in complete scenario slice
       undefined,
       { cwd },
     );
-    const resultText = result.content[0]?.text;
-    assert.ok(resultText);
-    assert.match(resultText, /first.*runs/);
-    assert.match(resultText, /second.*runs/);
+    for (const name of ["first", "second"])
+      assert.ok(
+        result.details.result.items.some(
+          (item) =>
+            item.label === `test/money.test.js: ${name}` &&
+            item.treatment === "judged" &&
+            item.selection?.selected,
+        ),
+      );
     assert.ok(states.every((state) => JSON.stringify(state).length <= 80000));
     for (const state of states) {
       assert.match(JSON.stringify(state), /seed=7/);
@@ -512,11 +582,12 @@ test("failed coverage witnesses mark absence unsure and never become test select
             q.type === "choice"
               ? {
                   type: "choice",
+                  source: "fresh" as const,
                   choice: "none",
                   confidence: 1,
                   probabilities: { none: 1 },
                 }
-              : { type: "bool", p: 0 },
+              : { type: "bool", source: "fresh" as const, p: 0 },
           ]),
         ),
         calls: 1,
@@ -532,13 +603,9 @@ test("failed coverage witnesses mark absence unsure and never become test select
       undefined,
       { cwd },
     );
-    const text = result.content[0]?.text;
-    assert.ok(text);
     assert.ok(witnessCalls > 0);
-    assert.match(text, /set-up check failed/);
-    assert.match(text, /unsure {2}changed, run by no discovered test/);
-    assert.doesNotMatch(text, /^changed, run by no discovered test/m);
-    assert.doesNotMatch(text, /command:|preset-check.*runs/);
+    assertUncertainAbsence(result.details.result);
+    assert.doesNotMatch(result.content[0]?.text ?? "", /command:/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
@@ -574,11 +641,12 @@ test("uncertain questions cite present units and witnesses use distinct ids", as
             q.type === "choice"
               ? {
                   type: "choice",
+                  source: "fresh" as const,
                   choice: "none",
                   confidence: 1,
                   probabilities: { none: 1 },
                 }
-              : { type: "bool", p: 0 },
+              : { type: "bool", source: "fresh" as const, p: 0 },
           ]),
         ),
         calls: 1,
@@ -623,12 +691,14 @@ test("healthy residual coverage selects tests and unhealthy coverage never hides
               q.type === "choice"
                 ? {
                     type: "choice",
+                    source: "fresh" as const,
                     choice: "none",
                     confidence: 1,
                     probabilities: { none: 1 },
                   }
                 : {
                     type: "bool",
+                    source: "fresh" as const,
                     p: id.startsWith("coverage_")
                       ? healthy
                         ? q.instructions.includes("decoy")
@@ -660,8 +730,8 @@ test("healthy residual coverage selects tests and unhealthy coverage never hides
       assert.ok(text);
       if (healthy) assert.match(text, /command:.*money\.test\.js/);
       else {
-        assert.match(text, /unsure {2}changed, run by no discovered test/);
-        assert.doesNotMatch(text, /command:/);
+        assertUncertainAbsence(result.details.result);
+        assert.doesNotMatch(result.content[0]?.text ?? "", /command:/);
       }
     } finally {
       await rm(cwd, { recursive: true, force: true });
@@ -904,6 +974,7 @@ test("real client batches reject residual coverage when a decoy fails", async ()
                   }
                 : {
                     type: "choice",
+                    source: "fresh" as const,
                     choice: "none",
                     probabilities: { none: 1 },
                     confidence: 1,
@@ -927,10 +998,8 @@ test("real client batches reject residual coverage when a decoy fails", async ()
       undefined,
       { cwd },
     );
-    const text = result.content[0]?.text ?? "";
-    assert.match(text, /set-up check failed: decoy/);
-    assert.match(text, /unsure {2}changed, run by no discovered test/);
-    assert.doesNotMatch(text, /command:/);
+    assertUncertainAbsence(result.details.result);
+    assert.doesNotMatch(result.content[0]?.text ?? "", /command:/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }
@@ -984,6 +1053,7 @@ test("production residual batches enforce the coverage cap and reference floor",
                     id,
                     {
                       type: "choice",
+                      source: "fresh" as const,
                       choice: "none",
                       confidence: 1,
                       probabilities: { none: 1 },
@@ -1031,14 +1101,8 @@ test("production residual batches enforce the coverage cap and reference floor",
           /set-up check failed|witness control unavailable/,
         );
       } else {
-        assert.match(text, /unsure {2}changed, run by no discovered test/);
-        assert.doesNotMatch(text, /command:/);
-        assert.match(
-          text,
-          mode === "missing"
-            ? /witness control unavailable/
-            : /set-up check failed/,
-        );
+        assertUncertainAbsence(result.details.result);
+        assert.doesNotMatch(result.content[0]?.text ?? "", /command:/);
       }
     } finally {
       await rm(cwd, { recursive: true, force: true });

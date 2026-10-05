@@ -1,3 +1,4 @@
+import { isAbsolute } from "node:path";
 import type { FileFinder, GrepCursor } from "@ff-labs/fff-node";
 import {
   FIND_GREP_PAGE_SIZE,
@@ -18,6 +19,23 @@ export async function prefilter(
   signal?: AbortSignal,
   native = true,
 ): Promise<Result<{ paths: string[]; scopeFiles: number }>> {
+  const restrictions = [
+    ...(typeof scope === "string" ? [scope] : (scope ?? [])),
+    ...(exclude ?? []),
+  ];
+  for (const restriction of restrictions) {
+    if (
+      isAbsolute(restriction) ||
+      restriction
+        .split(/[\\/]/)
+        .some((segment) => segment === ".." || segment === ".git")
+    )
+      return {
+        ok: false,
+        cause: "forbidden_path",
+        error: `Discovery restriction must remain inside admitted files: ${restriction}`,
+      };
+  }
   try {
     const listed = await exec(
       "git",
@@ -27,6 +45,7 @@ export async function prefilter(
     if (listed.killed || listed.code !== 0)
       return {
         ok: false,
+        cause: signal?.aborted ? "cancelled" : "git_failure",
         error: `Cannot list repository files: ${listed.stderr || "git interrupted"}`,
       };
     const paths = [
@@ -146,6 +165,10 @@ export async function prefilter(
       finder?.destroy();
     }
   } catch (error) {
-    return { ok: false, error: `Cannot prefilter files: ${String(error)}` };
+    return {
+      ok: false,
+      cause: signal?.aborted ? "cancelled" : "git_failure",
+      error: `Cannot prefilter files: ${String(error)}`,
+    };
   }
 }

@@ -97,7 +97,7 @@ test("all asks share each exact file state, parallel judgments obey max_calls an
           answers: Object.fromEntries(
             Object.keys(questions).map((id) => [
               id,
-              { type: "bool" as const, p: 0.04 },
+              { type: "bool" as const, source: "fresh" as const, p: 0.04 },
             ]),
           ),
         };
@@ -128,14 +128,23 @@ test("all asks share each exact file state, parallel judgments obey max_calls an
       { cwd },
     );
     assert.equal(peak, 2);
-    assert.deepEqual(states, [
-      { path: "a.ts", content: "export const name = 'a.ts';" },
-      { path: "b.ts", content: "export const name = 'b.ts';" },
-    ]);
+    assert.deepEqual(
+      states.map(({ path, content }) => ({ path, content })),
+      [
+        { path: "a.ts", content: "export const name = 'a.ts';" },
+        { path: "b.ts", content: "export const name = 'b.ts';" },
+      ],
+    );
     const text = result.content[0]?.text ?? "";
-    assert.match(text, /c1.*validates tokens.*no \(not shown\)/);
-    assert.match(text, /unchecked: c.ts/);
-    assert.match(text, /2 calls · 4 questions/);
+    assert.equal(
+      result.details.result.items.filter(
+        (item) => item.treatment === "not_judged",
+      ).length,
+      2,
+    );
+    assert.equal(result.details.result.execution, "partial");
+    assert.equal(result.details.result.accounting.httpAttempts, 2);
+    assert.equal(result.details.result.accounting.questionsSent, 4);
     assert.doesNotMatch(text, /export const/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
@@ -181,6 +190,7 @@ test("uncertain choices reverse substantive options and retain exact category te
           answers: {
             q1: {
               type: "choice",
+              source: "fresh",
               choice: "domain",
               confidence: 0.6,
               probabilities: { domain: 0.6, storage: 0.35, other: 0.05 },
@@ -335,7 +345,9 @@ test("git inventory includes tracked and untracked hidden files and reports igno
         result.files.map((file) => file.path),
         [".hidden", ".tracked", "normal.ts"],
       );
-      assert.match(result.skipped.join("\n"), /ignored.ts.*gitignored/);
+      assert.ok(
+        result.skipped.some((omission) => omission.includes("ignored.ts")),
+      );
     }
   } finally {
     await rm(cwd, { recursive: true, force: true });
@@ -436,7 +448,10 @@ test("ask_files refuses an entirely excluded UTF-8 batch without a judgment", as
       clearCache() {},
       async judge() {
         calls++;
-        return { ok: true, answers: { q1: { type: "bool", p: 0.98 } } };
+        return {
+          ok: true,
+          answers: { q1: { type: "bool", source: "fresh", p: 0.98 } },
+        };
       },
     };
     const host = detectHost({});
@@ -456,11 +471,21 @@ test("ask_files refuses an entirely excluded UTF-8 batch without a judgment", as
       { cwd },
     );
     assert.equal(calls, 0);
-    assert.match(
-      result.content[0]?.text ?? "",
-      /No readable evidence.*latin\.txt.*not UTF-8 text/,
+    const report = result.details.result;
+    assert.equal(report.execution, "refused");
+    assert.equal(report.items.length, 0);
+    assert.equal(report.accounting.httpAttempts, 0);
+    assert.ok(
+      report.diagnostics.some(
+        (diagnostic) =>
+          diagnostic.cause === "collection_omitted" &&
+          diagnostic.fact.includes("latin.txt") &&
+          diagnostic.fact.includes("not UTF-8 text"),
+      ),
     );
-    assert.doesNotMatch(result.content[0]?.text ?? "", /= yes/);
+    assert.ok(
+      report.actions.every((action) => action.repeatUnchanged === false),
+    );
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

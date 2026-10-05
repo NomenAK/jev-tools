@@ -48,7 +48,10 @@ for (const mode of ["failure", "timeout", "missing"] as const)
         return {
           ok: true,
           answers: Object.fromEntries(
-            Object.keys(questions).map((id) => [id, { type: "bool", p: 0.99 }]),
+            Object.keys(questions).map((id) => [
+              id,
+              { type: "bool", source: "fresh", p: 0.99 },
+            ]),
           ),
           calls: 1,
           questions: Object.keys(questions).length,
@@ -77,12 +80,27 @@ for (const mode of ["failure", "timeout", "missing"] as const)
       undefined,
       { cwd: process.cwd() },
     );
-    assert.equal(typeof observed?.output, "object");
-    const output = observed?.output as Record<string, unknown>;
-    assert.equal(output.exit_code, mode === "failure" ? 1 : null);
-    assert.equal(output.timed_out, mode === "timeout");
-    if (mode === "missing") assert.match(String(output.stderr), /ENOENT/);
-    else assert.match(result.content[0]?.text ?? "", /not identifiable/);
+    if (mode === "missing") {
+      assert.equal(observed, undefined);
+      assert.equal(result.details.result.execution, "refused");
+      assert.equal(result.details.result.context.command.execution, "started");
+      assert.equal(
+        result.details.result.context.command.exitCode.status,
+        "unknown",
+      );
+      assert.equal(
+        result.details.result.context.command.timedOut.status,
+        "unknown",
+      );
+      assert.equal(result.details.result.accounting.httpAttempts, 0);
+    } else {
+      assert.equal(typeof observed?.output, "object");
+      const output = observed?.output as Record<string, unknown>;
+      assert.equal(output.exit_code, mode === "failure" ? 1 : null);
+      assert.equal(output.timed_out, mode === "timeout");
+      assert.match(result.content[0]?.text ?? "", /not identifiable/);
+      assert.equal(result.details.result.context.command.execution, "finished");
+    }
     for (const path of paths) await assert.rejects(access(path));
   });
 test("real host bash capture preserves CI cwd stdout stderr and failed exit", async () => {
@@ -147,6 +165,25 @@ test("two-stage command selection preserves streams and failure evidence", async
     clearCache() {},
     async judge(state, questions, options) {
       assert.equal(options?.cache, false);
+      const evidence = state.evidence;
+      assert.ok(
+        evidence && typeof evidence === "object" && "context" in evidence,
+      );
+      const context = evidence.context;
+      assert.ok(
+        context && typeof context === "object" && "effectiveRoot" in context,
+      );
+      const effectiveRoot = context.effectiveRoot;
+      assert.ok(
+        effectiveRoot &&
+          typeof effectiveRoot === "object" &&
+          "path" in effectiveRoot,
+      );
+      assert.equal(typeof effectiveRoot.path, "string");
+      if (Object.hasOwn(questions, "find")) {
+        assert.equal(typeof state.output, "string");
+        assert.equal(effectiveRoot.path, process.cwd());
+      }
       if (!Object.hasOwn(questions, "find")) final = state;
       const p =
         typeof state.output === "string"
@@ -157,7 +194,10 @@ test("two-stage command selection preserves streams and failure evidence", async
       return {
         ok: true,
         answers: Object.fromEntries(
-          Object.keys(questions).map((id) => [id, { type: "bool", p }]),
+          Object.keys(questions).map((id) => [
+            id,
+            { type: "bool", source: "fresh", p },
+          ]),
         ),
         calls: 1,
         questions: Object.keys(questions).length,
@@ -165,7 +205,7 @@ test("two-stage command selection preserves streams and failure evidence", async
     },
   };
   const host = detectHost({});
-  await createAskTool({
+  const result = await createAskTool({
     client,
     host,
     exec,
@@ -191,6 +231,25 @@ test("two-stage command selection preserves streams and failure evidence", async
   );
   assert.match(String(output.stderr), /STDERR: separate diagnostic/);
   assert.doesNotMatch(String(output.stdout), /STDERR/);
+  const report = result.details.result;
+  assert.equal(report.context.command.execution, "finished");
+  assert.deepEqual(report.context.command.exitCode, {
+    status: "known",
+    value: 1,
+  });
+  assert.deepEqual(report.context.command.timedOut, {
+    status: "known",
+    value: false,
+  });
+  assert.ok(report.accounting.auxiliary.passages.fresh > 0);
+  assert.ok(
+    report.diagnostics.some((diagnostic) =>
+      diagnostic.fact.includes("selected passages"),
+    ),
+  );
+  assert.ok(
+    report.actions.some((action) => action.instruction.includes("exact text")),
+  );
 });
 test("command beyond find limit refuses without judgment", async () => {
   const exec: GitExec = async (binary, args) => {
@@ -232,9 +291,21 @@ test("command beyond find limit refuses without judgment", async () => {
     undefined,
     { cwd: process.cwd() },
   );
-  assert.match(
-    result.content[0]?.text ?? "",
-    /more than 40 find calls.*110000 bytes before/,
+  const report = result.details.result;
+  assert.equal(report.execution, "refused");
+  assert.equal(report.context.command.execution, "finished");
+  assert.deepEqual(report.context.command.exitCode, {
+    status: "known",
+    value: 0,
+  });
+  assert.equal(report.accounting.httpAttempts, 0);
+  assert.ok(
+    report.diagnostics.some(
+      (diagnostic) =>
+        diagnostic.cause === "evidence_too_large" &&
+        diagnostic.fact.includes("find calls") &&
+        diagnostic.fact.includes("110000 bytes before"),
+    ),
   );
 });
 test("disabled command is absent from schema and rejected before execution", async () => {
@@ -294,7 +365,10 @@ test("about output command evidence reaches judgment", async () => {
       return {
         ok: true,
         answers: Object.fromEntries(
-          Object.keys(questions).map((id) => [id, { type: "bool", p: 0.99 }]),
+          Object.keys(questions).map((id) => [
+            id,
+            { type: "bool", source: "fresh", p: 0.99 },
+          ]),
         ),
         calls: 1,
         questions: Object.keys(questions).length,
@@ -446,7 +520,7 @@ for (const runner of ["node-relative", "node-absolute", "jest", "pytest", "go"])
             answers: Object.fromEntries(
               Object.keys(questions).map((id) => [
                 id,
-                { type: "bool", p: 0.99 },
+                { type: "bool", source: "fresh", p: 0.99 },
               ]),
             ),
             calls: 1,
@@ -580,7 +654,10 @@ test("line clipping and shape limit are visible without claiming passage selecti
       return {
         ok: true,
         answers: Object.fromEntries(
-          Object.keys(questions).map((id) => [id, { type: "bool", p: 0.99 }]),
+          Object.keys(questions).map((id) => [
+            id,
+            { type: "bool", source: "fresh", p: 0.99 },
+          ]),
         ),
         calls: 1,
         questions: Object.keys(questions).length,

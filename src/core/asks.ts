@@ -505,8 +505,7 @@ export function readAsks(
         .join("; ");
       result.push({
         label: r.label,
-        value: { head: "unjudged", p: 0 },
-        band: "unsure",
+        unjudged: true,
         reason: `${reason}; ${r.missing}`,
         uncalibrated: r.uncalibrated,
       });
@@ -520,7 +519,23 @@ export function readAsks(
           : undefined;
       result.push({
         label: level ? `${r.label} ${JSON.stringify(level)}` : r.label,
+        source: answer.source,
+        ...(answer.type === "bool" ? { publicResult: answer.p >= 0.5 } : {}),
         answer,
+        rawValues:
+          answer.type === "bool"
+            ? [
+                {
+                  label: "bool",
+                  value: answer.p >= 0.5,
+                  probability: { status: "known", value: answer.p },
+                },
+              ]
+            : Object.entries(answer.probabilities).map(([label, value]) => ({
+                label,
+                value: label,
+                probability: { status: "known" as const, value },
+              })),
         uncalibrated: r.uncalibrated,
       });
       continue;
@@ -583,13 +598,22 @@ export function readAsks(
     if (
       Object.values(r.controls ?? {}).some((id) => answers[id]?.type !== "bool")
     ) {
-      band = "unsure";
-      reason =
-        "coherence control unjudged; no verdict: rerun with decisive evidence";
+      result.push({
+        label: r.label,
+        unjudged: true,
+        reason: "required coherence control has no valid bool response",
+        missing: r.missing,
+      });
+      continue;
     }
     if (!r.twin && Object.hasOwn(reversed, r.id) && !second) {
-      band = "unsure";
-      reason = `reverse-order control unjudged; no verdict: ${r.missing}`;
+      result.push({
+        label: r.label,
+        unjudged: true,
+        reason: "required reverse-order control unjudged",
+        missing: r.missing,
+      });
+      continue;
     }
     const firstMerged = merged(original, r.kind === "verify");
     const secondMerged = second
@@ -601,6 +625,54 @@ export function readAsks(
         ? `${r.label} ${JSON.stringify(r.options[head])}`
         : r.label,
       answer: { ...answer, probabilities: p, choice: head },
+      source: answer.source,
+      rawValues: Object.entries(original).map(([label, value]) => ({
+        label,
+        value: label,
+        probability: { status: "known" as const, value },
+      })),
+      reportControls: [
+        ...members.slice(1).map(([id, label]) => ({
+          id,
+          label,
+          answer: answers[id],
+          kind: "cross_check" as const,
+        })),
+        ...(!r.twin && reversed[r.id]
+          ? [
+              {
+                id: `${r.id}:reverse`,
+                label: "reverse order",
+                answer: reversed[r.id],
+                kind: "order" as const,
+              },
+            ]
+          : []),
+      ].flatMap(({ id, label, answer: a, kind }) => {
+        if (!a || a.type === "unjudged" || !a.source) return [];
+        return [
+          {
+            id,
+            kind,
+            source: a.source,
+            outcome: label,
+            rawValues:
+              a.type === "bool"
+                ? [
+                    {
+                      label,
+                      value: a.p >= 0.5,
+                      probability: { status: "known" as const, value: a.p },
+                    },
+                  ]
+                : Object.entries(a.probabilities).map(([key, value]) => ({
+                    label: key,
+                    value: key,
+                    probability: { status: "known" as const, value },
+                  })),
+          },
+        ];
+      }),
       value: { head, p: mass },
       band,
       reason,

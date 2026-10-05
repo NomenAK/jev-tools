@@ -3,6 +3,11 @@ import {
   collectDocsInventory,
   docsDeclarationSearch,
 } from "../adapters/docs.ts";
+import {
+  type EvidenceContext,
+  resolveEvidenceContext,
+  withEvidenceContext,
+} from "../adapters/evidence-context.ts";
 import { collectUnits } from "../adapters/git.ts";
 import { resolveBase } from "../adapters/git-base.ts";
 import { shareGitInventory } from "../adapters/git-inventory.ts";
@@ -12,6 +17,7 @@ import {
   DOCS_DISPLAY_MAX_SECTIONS,
   DOCS_MAX_SECTIONS,
   STATE_MAX_CHARS,
+  TIMEOUT_MS,
 } from "../constants.ts";
 import { collectDocsCandidates } from "../core/docs.ts";
 import {
@@ -21,6 +27,11 @@ import {
   type Envelope,
   type Limitation,
 } from "../core/output.ts";
+import {
+  type Cause,
+  known,
+  type ResultReportV1,
+} from "../core/result-report.ts";
 import type { Judgment } from "../jev/types.ts";
 import {
   type DocsFinding,
@@ -29,6 +40,7 @@ import {
 } from "../presets/docs.ts";
 import type { ToolDependencies } from "../runtime.ts";
 import { NOT_CONFIGURED } from "../texts/configuration.ts";
+import { ReviewReport, reportMetrics } from "./review-report.ts";
 
 export interface DocsCheckInput {
   cwd: string;
@@ -36,6 +48,7 @@ export interface DocsCheckInput {
   signal?: AbortSignal;
   budgetMs?: number;
   maxCalls?: number;
+  evidenceContext?: EvidenceContext;
 }
 export interface DocsCheckResult {
   ok: boolean;
@@ -47,6 +60,7 @@ export interface DocsCheckResult {
   envelope: Envelope;
   judgments: Judgment[];
   findings: DocsFinding[];
+  result: ResultReportV1;
   unjudged?: { count: number; sections: readonly string[]; truncated: boolean };
   collection?: {
     kind: "collection_budget";
@@ -61,6 +75,17 @@ export async function runDocsCheck(
   input: DocsCheckInput,
 ): Promise<DocsCheckResult> {
   const started = performance.now();
+  const report = new ReviewReport();
+  const admission = input.evidenceContext
+    ? undefined
+    : await resolveEvidenceContext(input.cwd, undefined, {
+        exec: deps.exec,
+        signal: input.signal,
+        origin: deps.evidenceOrigin,
+      });
+  const evidenceContext = input.evidenceContext ?? admission?.context;
+  if (!evidenceContext) throw new Error("Evidence context was not established");
+  evidenceContext.requestedBase = input.base ?? "HEAD";
   deps = { ...deps, exec: shareGitInventory(deps.exec) };
   const timeout =
     input.budgetMs === undefined
@@ -84,7 +109,10 @@ export async function runDocsCheck(
   let budget: BudgetRefusal | undefined;
   let sent = 0;
   let emptyBase: string | undefined;
-  const finish = (refusal?: string): DocsCheckResult => {
+  const finish = (
+    refusal?: string,
+    cause: Cause = "internal_error",
+  ): DocsCheckResult => {
     if (unchecked.length > 5) {
       unjudged = {
         count: unchecked.length,
@@ -157,7 +185,9 @@ export async function runDocsCheck(
       !collection &&
       !unchecked.length &&
       !findings.length &&
-      emptyBase === undefined
+      emptyBase === undefined &&
+      report.items.size > 0 &&
+      [...report.items.values()].every((item) => item.treatment === "judged")
         ? {
             lines: [
               {
@@ -171,7 +201,10 @@ export async function runDocsCheck(
       yield: {
         calls: judgments.reduce((n, j) => n + (j.calls ?? 0), 0),
         questions: judgments.reduce((n, j) => n + (j.questions ?? 0), 0),
-        costUsd: judgments.reduce((n, j) => n + (j.usage?.costUsd ?? 0), 0),
+        costUsd:
+          judgments.length && judgments.every((j) => j.usage !== undefined)
+            ? judgments.reduce((n, j) => n + (j.usage?.costUsd ?? 0), 0)
+            : undefined,
         cacheHits: judgments.reduce((n, j) => n + (j.cacheHits ?? 0), 0),
         cacheRequests: judgments.reduce(
           (n, j) => n + (j.cacheRequests ?? 0),
@@ -180,6 +213,41 @@ export async function runDocsCheck(
         elapsedMs: performance.now() - started,
       },
     });
+    report.diagnose(
+      "collection_omitted",
+      "Existing documentation sentences only; missing documentation is not exhaustively detected (measured 2/45 obligations across 180 partial commits).",
+      undefined,
+      [],
+      false,
+    );
+    if (emptyBase !== undefined)
+      report.diagnose(
+        "no_changed_units",
+        `No changed units against ${emptyBase}`,
+        emptyBase,
+        [],
+        false,
+      );
+    if (!refusal && emptyBase === undefined && !report.items.size)
+      report.diagnose(
+        "collection_empty",
+        "No matching documentation sections were collected; this does not establish documentation completeness.",
+        undefined,
+        [],
+        false,
+      );
+    if (refusal) {
+      report.refusal =
+        cause === "invalid_base" ||
+        cause === "invalid_root" ||
+        cause === "git_failure";
+      report.diagnose(cause, refusal);
+    }
+    const result = report.build(
+      "jev_check_diff",
+      evidenceContext,
+      reportMetrics(envelope),
+    );
     return {
       ok: !refusal,
       status: timeout?.aborted
@@ -192,14 +260,15 @@ export async function runDocsCheck(
       envelope,
       judgments,
       findings,
+      result,
       ...(collection ? { collection } : {}),
       ...(unjudged ? { unjudged } : {}),
     };
   };
   const client = deps.client;
-  if (!client) return finish(NOT_CONFIGURED);
+  if (!client) return finish(NOT_CONFIGURED, "not_configured");
   const sessionRefusal = deps.runtime.session.refusal();
-  if (sessionRefusal) return finish(sessionRefusal);
+  if (sessionRefusal) return finish(sessionRefusal, "session_budget");
   try {
     const comparison = await resolveBase(
       deps.exec,
@@ -207,8 +276,10 @@ export async function runDocsCheck(
       input.base,
       signal,
     );
-    if (!comparison.ok) return finish(comparison.error);
+    if (!comparison.ok)
+      return finish(comparison.error, comparison.cause ?? "invalid_base");
     const base = comparison.base;
+    evidenceContext.resolvedBase = base;
     const analysis = await createAnalysisContext();
     const [collected, inventory] = await Promise.all([
       collectUnits(
@@ -218,15 +289,40 @@ export async function runDocsCheck(
       ),
       collectDocsInventory(deps.exec, input.cwd, signal),
     ]);
-    if (!collected.ok) return finish(collected.error);
-    if (!inventory.ok) return finish(inventory.error);
-    for (const limit of collected.limits)
+    if (!collected.ok)
+      return finish(collected.error, collected.cause ?? "git_failure");
+    if (!inventory.ok)
+      return finish(inventory.error, inventory.cause ?? "file_unavailable");
+    const repositoryRoot = await deps.exec(
+      "git",
+      ["rev-parse", "--show-toplevel"],
+      { cwd: input.cwd, timeout: TIMEOUT_MS, signal },
+    );
+    if (
+      !repositoryRoot.code &&
+      !repositoryRoot.killed &&
+      evidenceContext.effectiveRoot
+    )
+      evidenceContext.effectiveRoot.path = repositoryRoot.stdout.trim();
+    for (const limit of collected.limits) {
+      report.diagnose("collection_omitted", limit.kind, limit.file);
       limitations.push({
         fact: `${limit.file} : ${limit.kind}`,
         next: "Read the complete change before concluding.",
       });
+    }
     if (!collected.units.length) {
       emptyBase = base;
+      report.inventories.push({
+        id: "changed-units",
+        kind: "units",
+        rules: ["Changed source units against resolved base"],
+        restrictions: [],
+        discovered: known(0),
+        considered: known(0),
+        scopeRestricted: false,
+        criteria: [],
+      });
       return finish();
     }
     const collectDeadline = performance.now() + DOCS_COLLECT_BUDGET_MS;
@@ -243,6 +339,59 @@ export async function runDocsCheck(
           performance.now() >= collectDeadline || !!signal?.aborted,
       },
     );
+    report.inventories.push({
+      id: "docs-sections",
+      kind: "sections",
+      rules: [
+        "Tracked Markdown sections referring to changed declarations or static import closure",
+        `At most ${DOCS_MAX_SECTIONS} admitted sections`,
+      ],
+      restrictions: [],
+      discovered: known(
+        candidates.candidates.length + candidates.omitted.length,
+      ),
+      considered: known(candidates.candidates.length),
+      scopeRestricted: false,
+      criteria: [],
+    });
+    for (const candidate of candidates.candidates)
+      report.expect(
+        `docs:${candidate.path}:${candidate.start}`,
+        `${candidate.path} § ${candidate.heading}`,
+        "section",
+      );
+    for (const candidate of candidates.omitted) {
+      const id = `docs:${candidate.path}:${candidate.start}`;
+      report.expect(id, `${candidate.path} § ${candidate.heading}`, "section");
+      report.diagnose(
+        "collection_omitted",
+        "Section exceeds DOCS_MAX_SECTIONS",
+        candidate.path,
+        [id],
+      );
+    }
+    for (const limit of candidates.limits) {
+      if (limit.kind === "collection_budget") {
+        report.missingWork = true;
+        report.diagnose(
+          "collection_omitted",
+          limit.reason,
+          limit.path,
+          [],
+          true,
+          [...(limit.sections ?? [])],
+        );
+      } else
+        report.diagnose(
+          "dynamic_dependency",
+          limit.reason,
+          limit.path,
+          [],
+          false,
+        );
+    }
+    for (const limit of inventory.limits)
+      report.diagnose("collection_omitted", limit.reason, limit.path);
     for (const limit of inventory.limits)
       limitations.push({
         fact: `${limit.path} : ${limit.reason}`,
@@ -290,61 +439,101 @@ export async function runDocsCheck(
     await Promise.all(
       candidates.candidates.map(async (candidate) => {
         const label = `${candidate.path} § ${candidate.heading}`;
+        const reportId = `docs:${candidate.path}:${candidate.start}`;
         if (
           candidate.units.some(
             (unit) => unit.before === null && unit.after === null,
           )
         ) {
           unchecked.push(`${label} (changed source unavailable)`);
+          report.diagnose(
+            "binary_or_non_utf8",
+            "Changed source unavailable",
+            label,
+            [reportId],
+          );
           return;
         }
         if (budget?.kind === "session") {
           unchecked.push(`${label} (${budget.message})`);
+          report.diagnose("session_budget", budget.message, label, [reportId]);
           return;
         }
         const prepared = prepareDocsCheck(candidate);
+        const state = withEvidenceContext(prepared.state, evidenceContext);
         if (
-          JSON.stringify(prepared.state).length > STATE_MAX_CHARS ||
+          JSON.stringify(state).length > STATE_MAX_CHARS ||
           candidate.sentences.length + 1 > CHOICE_MAX_OPTIONS
         ) {
           unchecked.push(`${label} (state or pointer too large)`);
+          report.diagnose(
+            "evidence_too_large",
+            "Section state or sentence pointer exceeds limits",
+            label,
+            [reportId],
+          );
           return;
         }
         if (signal?.aborted) {
           unchecked.push(`${label} (budget exceeded or canceled)`);
+          report.diagnose(
+            "cancelled",
+            "Collection budget exceeded or check canceled",
+            label,
+            [reportId],
+          );
           return;
         }
-        const judgment = await client.judge(
-          prepared.state,
-          prepared.questions,
-          {
-            signal,
-            ...deps.runtime.session.requestGate(),
-            beforeRequest(questionCount) {
-              if (budget?.kind === "session")
-                return { ok: false, error: budget.message };
-              if (signal?.aborted)
-                return {
-                  ok: false,
-                  error: "Budget exceeded or call canceled.",
-                };
-              if (input.maxCalls !== undefined && sent >= input.maxCalls) {
-                budget = {
-                  kind: "max_calls",
-                  message: `max_calls=${input.maxCalls} reached`,
-                };
-                return { ok: false, error: budget.message };
-              }
-              const admitted = deps.runtime.session.admit(questionCount);
-              if (!admitted.ok)
-                budget = { kind: "session", message: admitted.error };
-              else sent++;
-              return admitted;
-            },
-            onUsage: (usage) => deps.runtime.session.recordUsage(usage),
+        const judgment = await client.judge(state, prepared.questions, {
+          signal,
+          groups: [["status", "sentence"]],
+          ...deps.runtime.session.requestGate(),
+          admissionCause: () =>
+            budget?.kind === "session" ? "session_budget" : "call_budget",
+          beforeRequest(questionCount) {
+            if (budget?.kind === "session")
+              return { ok: false, error: budget.message };
+            if (signal?.aborted)
+              return {
+                ok: false,
+                error: "Budget exceeded or call canceled.",
+              };
+            if (input.maxCalls !== undefined && sent >= input.maxCalls) {
+              budget = {
+                kind: "max_calls",
+                message: `max_calls=${input.maxCalls} reached`,
+              };
+              return { ok: false, error: budget.message };
+            }
+            const admitted = deps.runtime.session.admit(questionCount);
+            if (!admitted.ok)
+              budget = { kind: "session", message: admitted.error };
+            else sent++;
+            return admitted;
           },
-        );
+          onUsage: (usage) => deps.runtime.session.recordUsage(usage),
+        });
         judgments.push(judgment);
+        if (!judgment.ok) report.failure(judgment, [reportId]);
+        else {
+          const status = judgment.answers.status;
+          const pointer = judgment.answers.sentence;
+          const finding = readDocsJudgment(candidate, judgment.answers);
+          const item = report.items.get(reportId);
+          if (finding && item)
+            item.label = `${label} — ${finding.sentence ? JSON.stringify(finding.sentence.text) : "sentence not identified"} — after ${finding.units.map((unit) => `${unit.name} (${unit.file})`).join(", ")}`;
+          report.answer(
+            reportId,
+            status,
+            { band: finding?.band ?? "verdict", reason: finding?.reason },
+            [
+              pointer ?? {
+                type: "unjudged",
+                reason: "Required sentence pointer missing",
+              },
+            ],
+          );
+        }
         if (!judgment.ok) {
           unchecked.push(`${label} (${judgment.error})`);
           return;
@@ -394,6 +583,7 @@ export async function runDocsCheck(
     if (signal?.aborted)
       return finish(
         timeout?.aborted ? "Docs budget exceeded." : "Docs check canceled.",
+        "cancelled",
       );
     throw error;
   }

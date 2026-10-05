@@ -110,7 +110,11 @@ function fakeClient(probability: number, requests: string[]): JevClient {
           answers: Object.fromEntries(
             Object.keys(questions).map((id) => [
               id,
-              { type: "unjudged", reason: admitted.error },
+              {
+                type: "unjudged",
+                cause: "call_budget",
+                reason: admitted.error,
+              },
             ]),
           ),
           calls: 0,
@@ -122,12 +126,13 @@ function fakeClient(probability: number, requests: string[]): JevClient {
           question.type === "score"
             ? {
                 type: "score",
+                source: "fresh" as const,
                 score: 2.8,
                 confidence: 0.9,
                 legend: [],
                 probabilities: { "3": 0.9, "2": 0.1 },
               }
-            : { type: "bool", p: probability },
+            : { type: "bool", source: "fresh" as const, p: probability },
         ]),
       );
       return {
@@ -178,9 +183,17 @@ test("max_calls reserves the matrix and exposes unchecked severity instead of no
       { cwd },
     );
     assert.deepEqual(requests, ["bool"]);
-    assert.match(result.content[0]?.text ?? "", /unchecked/);
-    assert.match(result.content[0]?.text ?? "", /raise max_calls/);
-    assert.doesNotMatch(result.content[0]?.text ?? "", /no findings/);
+    assert.equal(result.details.result.execution, "partial");
+    assert.ok(
+      result.details.result.items.some(
+        (item) => item.treatment === "not_judged",
+      ),
+    );
+    assert.ok(
+      result.details.result.diagnostics.some(
+        (diagnostic) => diagnostic.cause === "call_budget",
+      ),
+    );
   }));
 test("no findings is emitted only for judged negative matrix cells", async () =>
   repository(async (cwd) => {
@@ -194,7 +207,10 @@ test("no findings is emitted only for judged negative matrix cells", async () =>
       undefined,
       { cwd },
     );
-    assert.match(result.content[0]?.text ?? "", /risk: no findings/);
+    assert.equal(result.details.result.execution, "complete");
+    assert.ok(
+      result.details.result.items.every((item) => item.treatment === "judged"),
+    );
     const refused = await createCheckDiffTool(
       dependencies(fakeClient(0.95, requests)),
     ).execute(
@@ -204,8 +220,12 @@ test("no findings is emitted only for judged negative matrix cells", async () =>
       undefined,
       { cwd },
     );
-    assert.doesNotMatch(refused.content[0]?.text ?? "", /no findings/);
-    assert.match(refused.content[0]?.text ?? "", /unchecked/);
+    assert.equal(refused.details.result.execution, "not_judged");
+    assert.ok(
+      refused.details.result.items.every(
+        (item) => item.treatment === "not_judged",
+      ),
+    );
   }));
 
 async function cleanRepository(run: (cwd: string) => Promise<void>) {
@@ -247,11 +267,12 @@ test("risk on an empty diff reports nothing judged instead of no findings", asyn
       undefined,
       { cwd },
     );
-    const text = result.content[0]?.text ?? "";
-    assert.doesNotMatch(text, /no findings/);
-    assert.match(
-      text,
-      /\[no changed units against HEAD; nothing judged; pass base= or check the working directory\]/,
+    assert.equal(result.details.result.execution, "not_judged");
+    assert.equal(result.details.result.items.length, 0);
+    assert.ok(
+      result.details.result.diagnostics.some(
+        (diagnostic) => diagnostic.cause === "no_changed_units",
+      ),
     );
     assert.deepEqual(requests, []);
   }));
@@ -271,10 +292,16 @@ test("risk on an empty diff names the resolved base", async () =>
       undefined,
       { cwd },
     );
-    const text = result.content[0]?.text ?? "";
-    assert.doesNotMatch(text, /no findings/);
-    assert.ok(text.includes(`no changed units against ${sha}`));
-    assert.match(text, /nothing judged/);
+    assert.deepEqual(result.details.result.context.resolvedBase, {
+      status: "known",
+      value: sha,
+    });
+    assert.equal(result.details.result.execution, "not_judged");
+    assert.ok(
+      result.details.result.diagnostics.some(
+        (diagnostic) => diagnostic.cause === "no_changed_units",
+      ),
+    );
     assert.deepEqual(requests, []);
   }));
 test("project dimensions stay uncalibrated and have neither severity nor witness questions", async () =>
@@ -337,10 +364,11 @@ test("local caller choice has independent bands and retains its proof for severi
       join(cwd, "a.ts"),
       "export function deliver(client) { return client.fetch(); }\n",
     );
-    for (const [failure, cannot, band] of [
-      [0.9, 0.01, "verdict"],
-      [0.4, 0.1, "unsure"],
-      [0.1, 0.8, "abstain"],
+    for (const [failure, cannot, band, outcome] of [
+      [0.9, 0.01, "verdict", "new_failure"],
+      [0.4, 0.1, "unsure", "new_failure"],
+      [0.1, 0.8, "abstain", "cannot_tell"],
+      [0.1, 0.01, "verdict", "no_new_failure"],
     ] as const) {
       let matrixHasCaller = false;
       let severityHasCaller = false;
@@ -355,7 +383,8 @@ test("local caller choice has independent bands and retains its proof for severi
               answers: {
                 caller: {
                   type: "choice",
-                  choice: cannot >= 0.3 ? "cannot_tell" : "new_failure",
+                  source: "fresh" as const,
+                  choice: outcome,
                   confidence: 0.9,
                   probabilities: {
                     no_new_failure: 1 - failure - cannot,
@@ -373,6 +402,7 @@ test("local caller choice has independent bands and retains its proof for severi
               answers: {
                 severity: {
                   type: "score",
+                  source: "fresh" as const,
                   score: 2,
                   confidence: 0.9,
                   legend: [],
@@ -388,7 +418,7 @@ test("local caller choice has independent bands and retains its proof for severi
             answers: Object.fromEntries(
               Object.keys(questions).map((id) => [
                 id,
-                { type: "bool", p: 0.05 },
+                { type: "bool", source: "fresh" as const, p: 0.05 },
               ]),
             ),
           };
@@ -401,12 +431,72 @@ test("local caller choice has independent bands and retains its proof for severi
         undefined,
         { cwd },
       );
+      const caller = result.details.result.items.find((item) =>
+        item.id.startsWith("caller:"),
+      );
+      assert.ok(caller?.treatment === "judged");
+      assert.equal(caller.judgment.band, band);
+      assert.equal(caller.judgment.result, outcome);
+      const probability =
+        outcome === "cannot_tell"
+          ? cannot
+          : outcome === "no_new_failure"
+            ? 1 - failure - cannot
+            : failure;
+      assert.deepEqual(caller.judgment.measure, {
+        kind: "probability",
+        value: { status: "known", value: probability },
+      });
+      assert.equal(caller.source, "fresh");
+      assert.deepEqual(
+        caller.judgment.rawValues.map(({ label, probability }) => [
+          label,
+          probability,
+        ]),
+        [
+          ["no_new_failure", { status: "known", value: 1 - failure - cannot }],
+          ["new_failure", { status: "known", value: failure }],
+          ["cannot_tell", { status: "known", value: cannot }],
+        ],
+      );
+      assert.match(caller.label, /a\.ts:\d+-\d+ deliver/);
+      assert.match(caller.label, /static code only; .*caller\.ts:/);
+      assert.ok(caller.judgment.reason.length > 0);
+      const text = result.content[0]?.text ?? "";
+      assert.ok(
+        text.includes(
+          `${band === "verdict" ? "" : `${band}  `}${caller.label} = ${outcome} (probability ${probability}) [fresh]`,
+        ),
+      );
       const line = result.details.envelope.lines.find(
         (line) => line.type === "answer",
       );
-      assert.ok(line?.type === "answer");
-      assert.equal(line.band, band);
-      assert.match(line.label, /static code only/);
+      if (outcome === "no_new_failure") assert.equal(line, undefined);
+      else {
+        assert.ok(line?.type === "answer");
+        assert.equal(line.band, band);
+        assert.deepEqual(line.value, { head: outcome, p: probability });
+        const proofLabel = line.label.split(" · severity")[0];
+        assert.ok(proofLabel);
+        assert.ok(caller.label.startsWith(proofLabel));
+      }
+      if (band === "abstain") {
+        const diagnostic = result.details.result.diagnostics.find((entry) =>
+          caller.diagnosticIds.includes(entry.id),
+        );
+        assert.ok(diagnostic);
+        assert.equal(diagnostic.cause, "missing_required");
+        assert.equal(diagnostic.effect, "reservation");
+        assert.match(diagnostic.fact, /actual provider or binding missing/);
+        const action = result.details.result.actions.find((entry) =>
+          diagnostic.actionIds.includes(entry.id),
+        );
+        assert.ok(action);
+        assert.equal(action.code, "inspect_native");
+        assert.equal(action.repeatUnchanged, false);
+        assert.match(text, /actual provider or binding missing/);
+        assert.match(text, /Inspect the named evidence natively/);
+      }
       assert.equal(result.details.callerProofs.length, 1);
       assert.ok(
         result.details.callerProofs[0]?.paths.every(
@@ -414,13 +504,16 @@ test("local caller choice has independent bands and retains its proof for severi
         ),
       );
       const displayed =
-        line.label.split("static code only; ")[1]?.split(" · severity")[0] ??
+        caller.label.split("static code only; ")[1]?.split(" · severity")[0] ??
         "";
       const spans = displayed.split(" + ");
       assert.equal(new Set(spans).size, spans.length);
       assert.ok(spans.length <= 8);
       assert.equal(matrixHasCaller, false);
-      assert.equal(severityHasCaller, band === "verdict");
+      assert.equal(
+        severityHasCaller,
+        outcome === "new_failure" && band === "verdict",
+      );
     }
   }));
 test("transport failures and unhealthy witnesses cannot report no findings", async () =>
@@ -437,7 +530,7 @@ test("transport failures and unhealthy witnesses cannot report no findings", asy
             answers: Object.fromEntries(
               Object.keys(questions).map((id) => [
                 id,
-                { type: "bool", p: 0.01 },
+                { type: "bool", source: "fresh" as const, p: 0.01 },
               ]),
             ),
           };
