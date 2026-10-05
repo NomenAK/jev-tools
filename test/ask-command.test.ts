@@ -9,6 +9,7 @@ import { execCommand } from "../node_modules/@earendil-works/pi-coding-agent/dis
 import { captureCommand } from "../src/adapters/command.ts";
 import { spawnExec } from "../src/adapters/exec.ts";
 import { powershellEnv } from "../src/adapters/private-storage.ts";
+import { OUTPUT_LINE_MAX_CHARS } from "../src/constants.ts";
 import type { GitExec } from "../src/core/git.ts";
 import { Guide } from "../src/guide.ts";
 import { detectHost } from "../src/host.ts";
@@ -220,6 +221,31 @@ test("configured key echoed by a command is redacted before Jev sees the state",
     ),
   );
   assert.equal(JSON.stringify(result).includes(key), false);
+});
+test("a key cut by the line limit leaves no readable prefix", async () => {
+  const key = "cut-boundary-secret-key-0123456789";
+  const keep = 10;
+  const line = `${"x".repeat(OUTPUT_LINE_MAX_CHARS - keep)}${key} tail`;
+  const exec: GitExec = async (_binary, args) => {
+    await writeFile(args.at(-2) ?? "", `${line}\n`);
+    await writeFile(args.at(-1) ?? "", "");
+    return { stdout: "", stderr: "", code: 0, killed: false };
+  };
+  const captured = await captureCommand(
+    exec,
+    process.cwd(),
+    "print",
+    undefined,
+    undefined,
+    key,
+  );
+  assert.ok(captured.ok);
+  if (captured.ok) {
+    const stdout = captured.output.stdout;
+    assert.equal(stdout.includes(key.slice(0, keep)), false);
+    assert.match(stdout, /\[redacted\]…\[line truncated at/);
+    assert.equal(captured.redactions, 1);
+  }
 });
 test("oversized real command is refused after execution", async () => {
   const cwd = await mkdtemp(join(tmpdir(), "jev-command-limit-"));

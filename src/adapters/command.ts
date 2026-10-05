@@ -32,14 +32,38 @@ export interface CommandOutput {
   compressed: boolean;
   truncated: boolean;
 }
-/** Replace every occurrence of `secret` in `text`, counting replacements. */
+const TRUNCATION_MARK = `…[line truncated at ${OUTPUT_LINE_MAX_CHARS} chars]`;
+/** Shortest key prefix worth redacting when a line cut leaves only its start. */
+const SECRET_PREFIX_MIN = 4;
+/**
+ * Replace every occurrence of `secret` in `text`, counting replacements. A
+ * line cut at OUTPUT_LINE_MAX_CHARS can end inside the key; that trailing key
+ * prefix is redacted too.
+ */
 export function redactSecret(
   text: string,
   secret: string | undefined,
 ): { text: string; count: number } {
   if (!secret) return { text, count: 0 };
   const parts = text.split(secret);
-  return { text: parts.join("[redacted]"), count: parts.length - 1 };
+  let result = parts.join("[redacted]");
+  let count = parts.length - 1;
+  if (result.endsWith(TRUNCATION_MARK)) {
+    const kept = result.slice(0, -TRUNCATION_MARK.length);
+    const min = Math.min(SECRET_PREFIX_MIN, secret.length);
+    for (
+      let length = Math.min(secret.length - 1, kept.length);
+      length >= min;
+      length--
+    ) {
+      if (kept.endsWith(secret.slice(0, length))) {
+        result = `${kept.slice(0, -length)}[redacted]${TRUNCATION_MARK}`;
+        count++;
+        break;
+      }
+    }
+  }
+  return { text: result, count };
 }
 export async function captureCommand(
   exec: GitExec,
@@ -167,9 +191,7 @@ export async function captureCommand(
       for await (const raw of outputLines(path, signal)) {
         signal?.throwIfAborted();
         const line = redactSecret(cleanOutput(raw), secret).text;
-        linesTruncated ||= raw.endsWith(
-          `…[line truncated at ${OUTPUT_LINE_MAX_CHARS} chars]`,
-        );
+        linesTruncated ||= raw.endsWith(TRUNCATION_MARK);
         const shape = lineShape(line);
         if (
           !frequencies.has(shape) &&
@@ -216,9 +238,7 @@ export async function captureCommand(
         lineOmittedChars += chars;
       })) {
         signal?.throwIfAborted();
-        linesTruncated ||= raw.endsWith(
-          `…[line truncated at ${OUTPUT_LINE_MAX_CHARS} chars]`,
-        );
+        linesTruncated ||= raw.endsWith(TRUNCATION_MARK);
         // Redact before compression, failure windows and state assembly.
         const line = redacted(cleanOutput(raw));
         compressor.line(line);
