@@ -163,11 +163,12 @@ test("unit pointer past the option cap stays selected and names the cap", async 
                 q.type === "choice"
                   ? {
                       type: "choice",
+                      source: "fresh" as const,
                       choice: "none",
                       confidence: 0.9,
                       probabilities: { none: 0.9 },
                     }
-                  : { type: "bool", p: 0.01 },
+                  : { type: "bool", source: "fresh" as const, p: 0.01 },
               ]),
             ),
           };
@@ -197,27 +198,43 @@ test("unit pointer past the option cap stays selected and names the cap", async 
         );
         assert.doesNotMatch(text, /choice option cap/);
       } else {
-        // Past the choice cap the pointer state no longer fits the state
-        // budget, so batching is never reached: nothing is judged and the
+        // Past the choice cap the pointer is skipped and recorded as a
+        // limitation while coverage still judges every unit; the
         // conservative outcome keeps every scenario selected.
-        assert.equal(asked.length, 0);
-        const report = result.details.result;
-        assert.equal(
-          report.accounting.requestedResults.notJudged,
-          report.items.length,
-        );
-        assert.ok(report.items.length > 0);
         assert.ok(
-          report.items.every(
+          asked.every((q) => q.type !== "choice"),
+          "over-cap pointer asks no choice question",
+        );
+        assert.ok(
+          result.details.limitations?.some(
+            (limitation) =>
+              limitation.cause === "unit pointer exceeds the choice option cap",
+          ),
+          "over-cap pointer recorded as a limitation",
+        );
+        const report = result.details.result;
+        const pointer = report.items.filter(
+          (item) => !item.id.startsWith("coverage:"),
+        );
+        assert.equal(pointer.length, 1);
+        assert.ok(
+          pointer.every(
             (item) =>
               item.treatment === "not_judged" &&
               item.selection?.selected === true &&
               item.selection.reason === "conservative_fallback",
           ),
         );
+        const coverage = report.items.filter((item) =>
+          item.id.startsWith("coverage:"),
+        );
+        assert.equal(coverage.length, 255);
         assert.ok(
-          report.diagnostics.some(
-            (diagnostic) => diagnostic.cause === "evidence_too_large",
+          coverage.every(
+            (item) =>
+              item.treatment === "judged" &&
+              item.source === "fresh" &&
+              item.selection?.selected === true,
           ),
         );
       }
