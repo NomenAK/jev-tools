@@ -18,8 +18,8 @@ The server reads, per field, the environment first and then the configuration sa
 
 | Variable | Required | Meaning |
 |---|---|---|
-| `JEV_TOOLS_URL` | yes | Complete endpoint URL compatible with the Jev API format. |
-| `JEV_TOOLS_API_KEY` | yes | Bearer credential. Never printed in tool output. |
+| `JEV_TOOLS_URL` | yes | Complete endpoint URL compatible with the Jev API format. Must be `https:`; plain `http:` is accepted only for `127.0.0.1`, `::1` or `localhost`. |
+| `JEV_TOOLS_API_KEY` | yes | Bearer credential. Never printed in tool output, never passed to `jev_ask` commands, and replaced with `[redacted]` in their output. |
 | `JEV_TOOLS_MODEL` | no | Requested model, default `openjev`. |
 | `JEV_TOOLS_ROOT` | no | Repository directory when `--root` is not given. |
 | `JEV_TOOLS_MAX_CALLS`, `JEV_TOOLS_MAX_USD` | no | Session call and cost limits for this server process. |

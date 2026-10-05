@@ -90,8 +90,8 @@ export JEV_TOOLS_MODEL="openjev"
 
 | Variable | Meaning |
 |---|---|
-| `JEV_TOOLS_URL` | Required complete endpoint URL compatible with the Jev API format. |
-| `JEV_TOOLS_API_KEY` | Required Bearer credential; configuration values are not printed in tool output. |
+| `JEV_TOOLS_URL` | Required complete endpoint URL compatible with the Jev API format. Must be `https:`; plain `http:` is accepted only for `127.0.0.1`, `::1` or `localhost`. |
+| `JEV_TOOLS_API_KEY` | Required Bearer credential; configuration values are not printed in tool output, and command children never receive it. |
 | `JEV_TOOLS_MODEL` | Requested model string, default `openjev`; a moving alias, not a guarantee of served-model identity. |
 | `JEV_TOOLS_MAX_CALLS` | Session-wide non-negative safe-integer call limit; absent or empty means unlimited. Invalid values refuse requests. |
 | `JEV_TOOLS_MAX_USD` | Session-wide finite non-negative cost limit, including fractions; absent or empty means unlimited. Invalid values refuse requests. |
@@ -153,11 +153,11 @@ MCP clients receive the guide as server `instructions`, which some clients ignor
 
 Repository evidence, notes and optional command output are sent to your configured endpoint. Review its data-handling policy before using confidential repositories. See [security guidance](SECURITY.md).
 
-File collection is confined to the repository: absolute paths, parent traversal, escaping symlinks, Git metadata and internal URLs are not file inputs. Build output, binaries, lockfiles and oversized files are skipped or refused with visible limits; evidence is not silently truncated into a verdict. This confinement does **not** sandbox a command. `jev_ask` commands can read, write or access the network with the host's shell permissions. omp uses execution approval for commands; pi does not supply an additional per-tool command approval; MCP clients apply their own tool approval, and the server marks `jev_ask` as not read-only. Set `JEV_TOOLS_ALLOW_COMMAND=0` to disable them.
+File collection is confined to the repository: absolute paths, parent traversal, escaping symlinks, Git metadata and internal URLs are not file inputs. Files named like secrets (`.env`, `.env.*` except `.env.example`/`.env.sample`/`.env.template`, `*.pem`, `id_rsa*`, `*.p12`, `credentials*`, `secrets*`, any depth, any case) are refused before reading and named with cause `secret_pattern`. Build output, binaries, lockfiles and oversized files are skipped or refused with visible limits; evidence is not silently truncated into a verdict. This confinement does **not** sandbox a command. `jev_ask` commands can read, write or access the network with the host's shell permissions; they run without `JEV_TOOLS_API_KEY`, and the configured key is replaced with `[redacted]` in their output. omp uses execution approval for commands; pi does not supply an additional per-tool command approval; MCP clients apply their own tool approval, and the server marks `jev_ask` as not read-only. Set `JEV_TOOLS_ALLOW_COMMAND=0` to disable them.
 
 ## Automatic documentation check
 
-On a dirty tree, the extension can check existing Markdown documentation once at run end against changes from `HEAD`, including untracked files. A flagged existing sentence can request one additional turn to inspect and update it or explain with evidence why it remains correct; a flag does not itself establish falsehood or require a second call. Merely unsure sections do not trigger another turn. `JEV_TOOLS_AUTO_DOCS=0`, missing configuration, invalid/exhausted session budgets or a clean tree skip the check. Errors and timeout do not block the host. This opt-out host feature does not certify documentation completeness. MCP has no hook and requires no manual replacement ritual.
+On a dirty tree, the extension can check existing Markdown documentation once at run end against changes from `HEAD`, including admitted untracked files (not gitignored, not secret-named), which are sent to the endpoint without an explicit tool call. A flagged existing sentence can request one additional turn to inspect and update it or explain with evidence why it remains correct; a flag does not itself establish falsehood or require a second call. Merely unsure sections do not trigger another turn. `JEV_TOOLS_AUTO_DOCS=0`, missing configuration, invalid/exhausted session budgets or a clean tree skip the check. Errors and timeout do not block the host. This opt-out host feature does not certify documentation completeness. MCP has no hook and requires no manual replacement ritual.
 
 ## Known limits
 

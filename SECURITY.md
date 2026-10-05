@@ -16,7 +16,23 @@ This is a solo-maintained project. Reports are reviewed on a best-effort basis; 
 
 Report repository-confinement escapes in file evidence collection, including reads outside the selected repository; unintended secret exposure caused by jev-tools; and unintended command execution or bypasses of disabled command execution.
 
-File evidence collection is confined to the repository, but optional commands are not sandboxed: they run with the host's permissions and may read or modify files or access the network. `JEV_TOOLS_ALLOW_COMMAND=0` disables this command path. Selected repository evidence and requested command output are sent to the configured API endpoint; automatic secret redaction is not promised. Review the data and endpoint before use.
+File evidence collection is confined to the repository, but optional commands are not sandboxed: they run with the host's permissions and may read or modify files or access the network. `JEV_TOOLS_ALLOW_COMMAND=0` disables this command path. Selected repository evidence and requested command output are sent to the configured API endpoint. Review the data and endpoint before use.
+
+### Secret-named files are refused
+
+Every evidence admission path (`jev_ask` paths and import closure, `jev_ask_files`, `jev_find_files`, `jev_locate_in_file`, `jev_check_diff` diff units and local callers, `jev_select_tests` inventory and the automatic pi/omp documentation check) refuses a file whose base name matches `.env`, `.env.*`, `*.pem`, `id_rsa*`, `*.p12`, `credentials*` or `secrets*`, at any depth and case-insensitively, whatever its Git status (tracked, untracked or added). `.env.example`, `.env.sample` and `.env.template` remain admitted. The refusal happens before the content is read: the result names the path with cause `secret_pattern`, and a question that explicitly requires that file stays unjudged. There is no per-call or environment override. Files with other names are not inspected for secrets.
+
+### Commands never receive the API key
+
+`jev_ask` commands and the Windows PowerShell ACL helper run with the host environment minus `JEV_TOOLS_API_KEY`. Before command output enters a state, every occurrence of the configured key value, whether it came from the environment or the saved configuration, is replaced with `[redacted]` in stdout, stderr and the echoed command line; the result reports how many replacements were made. Detection of other secrets in command output is not promised.
+
+### The key travels only over HTTPS or loopback
+
+`JEV_TOOLS_URL` must use `https:`. Plain `http:` is accepted only for `127.0.0.1`, `::1` or `localhost`; any other `http:` URL is a configuration error, reported without the URL or key and before any request, so the Bearer key is never sent in clear text over a network.
+
+### Automatic documentation check
+
+On pi and omp, the run-end documentation check (disable with `JEV_TOOLS_AUTO_DOCS=0`) sends changed units from a dirty tree to the endpoint without an explicit tool call, including admitted untracked files that are not gitignored. Secret-named files are refused as above; anything else untracked and not ignored can be sent. Keep sensitive scratch files gitignored or outside the repository.
 
 Saved interactive configuration stores the API key in plaintext in a private user-level file (`~/.config/jev-agent-tools/config.json` by default). Privacy uses each operating system's own model: owner-only mode bits on POSIX; on Windows, an access list whose allow entries are only the current user, SYSTEM and Administrators, read by SID through the system Windows PowerShell. Protect the account and back-ups accordingly, or use environment variables from a secret manager instead.
 

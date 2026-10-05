@@ -30,7 +30,7 @@ At least one of `state`, `paths` or `command` must provide evidence.
 | `state` | Optional string, at most 8,000 characters | Short request, plan or observation not shown by the files; not a place to paste files or logs. JSON object text is accepted, but reserved evidence keys such as `files`, `files_before`, `evidence` and `output` cannot be supplied by the note. |
 | `paths` | Optional array of nonempty strings, at most 20 | Repository-relative files to read; not recursive directory or glob triage. |
 | `base` | Optional nonempty Git ref | Add historical versions for the resolved revision; only established absence is `null`. Use `HEAD` for uncommitted before/after questions. Both versions count toward serialized evidence admission. |
-| `command` | Optional nonempty string | Execute `bash -c` at the repository root with `CI=1`, normal shell permissions and no additional sandbox. |
+| `command` | Optional nonempty string | Execute `bash -c` at the repository root with `CI=1` and without `JEV_TOOLS_API_KEY`, normal shell permissions and no additional sandbox. The configured key is replaced with `[redacted]` in captured output, with the count reported. |
 | `timeout_s` | Optional number, default 60, range 1–300 | Command timeout in seconds. |
 | `asks` | Required intent, nonempty intent array, or JSON string encoding them | Typed questions; one intent per judgment. |
 | `max_calls` | Optional non-negative integer | Limit requests including controls and output passage finding; unjudged work is reported. |

@@ -9,6 +9,15 @@ modules are not a stable library API.
 
 ## [Unreleased]
 
+### Breaking
+
+- `JEV_TOOLS_URL` (and saved or flag URLs) with plain `http:` is refused unless the host is `127.0.0.1`, `::1` or `localhost`; use `https:`. The configuration error shows neither the URL nor the key and occurs before any request.
+- Files whose base name matches `.env`, `.env.*`, `*.pem`, `id_rsa*`, `*.p12`, `credentials*` or `secrets*` (any depth, case-insensitive; `.env.example`, `.env.sample` and `.env.template` excepted) are refused before reading on every evidence path, including diff units, test inventory, find, locate, ask-files and the pi/omp documentation hook. Each refusal is a named exclusion with the new cause `secret_pattern`; a question that explicitly requires such a file stays unjudged. There is no override.
+
+### Security
+
+- `jev_ask` commands and the Windows PowerShell ACL helper no longer inherit `JEV_TOOLS_API_KEY`. The configured key value (environment or saved configuration) is replaced with `[redacted]` in command output before state assembly, and the number of replacements is reported as a limitation.
+
 ### Added
 
 - Optional `root` on all six tools, limited to the initial repository's exact Git root or registered live worktrees with the same common directory; invalid overrides refuse before evidence, commands, cache or judgments.
