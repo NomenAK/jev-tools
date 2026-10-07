@@ -10,10 +10,8 @@ import { loadSyntaxParser } from "../adapters/syntax.ts";
 import { hostUsage } from "../adapters/usage.ts";
 import {
   CHOICE_MAX_OPTIONS,
-  LOCATE_GRAY_MIN,
   LOCATE_MIN_KB,
   LOCATE_SECTION_MAX_LINES,
-  LOCATE_SHRINK_TOP,
   LOCATE_VERDICT_MIN,
   STATE_MAX_CHARS,
 } from "../constants.ts";
@@ -24,11 +22,7 @@ import {
   sectionState,
   sectionStateFits,
 } from "../core/locate.ts";
-import {
-  buildEnvelope,
-  type EnvelopeInput,
-  type Limitation,
-} from "../core/output.ts";
+import type { EnvelopeInput, Limitation } from "../core/output.ts";
 import { needsReverse, pointerQuestion, readPointer } from "../core/pointer.ts";
 import {
   type Action,
@@ -51,6 +45,7 @@ import { renderResultReport } from "../render.ts";
 import type { ToolDependencies } from "../runtime.ts";
 import { NOT_CONFIGURED } from "../texts/configuration.ts";
 import { LOCATE_DESCRIPTION } from "../texts/locate.ts";
+import { createJudgeOptions, finishToolCall } from "./judge-options.ts";
 
 const parameters = Type.Object(
   {
@@ -185,6 +180,10 @@ export function createLocateTool(
           actionIds: [actionId],
         });
       };
+      const { options } = createJudgeOptions({
+        signal,
+        session: runtime.session,
+      });
       const finish = (input: Omit<EnvelopeInput, "yield">) => {
         const usage = results.reduce(
           (sum, result) => ({
@@ -205,15 +204,19 @@ export function createLocateTool(
           metrics.cacheHits += result.cacheHits ?? 0;
           metrics.cacheRequests += result.cacheRequests ?? 0;
         }
-        const envelope = buildEnvelope({
-          ...input,
-          limitations: [...limitations, ...(input.limitations ?? [])],
-          yield: {
+        const { envelope } = finishToolCall(
+          runtime,
+          ctx,
+          started,
+          {
+            ...input,
+            limitations: [...limitations, ...(input.limitations ?? [])],
+          },
+          {
             ...metrics,
             costUsd: usage.costUsd,
-            elapsedMs: performance.now() - started,
           },
-        });
+        );
         if (input.refusal) diagnose(failureCause, input.refusal);
         if (input.answers?.[0] && primary?.source)
           actions.push({
@@ -321,8 +324,6 @@ export function createLocateTool(
                 failureCause === "evidence_too_large"),
           ),
         });
-        runtime.session.record(envelope);
-        runtime.guide.deliver(ctx);
         return {
           content: [
             {
@@ -506,9 +507,8 @@ export function createLocateTool(
             {
               signal,
               ...runtime.session.requestGate(),
-              beforeRequest: (n) => runtime.session.admit(n),
+              ...options,
               admissionCause: () => "session_budget",
-              onUsage: (usage) => runtime.session.recordUsage(usage),
             },
           );
           results.push(result);
@@ -667,35 +667,15 @@ export function createLocateTool(
         return finish({
           refusal: `Selected block exceeds ${STATE_MAX_CHARS} chars or the choice limit; read ${args.path}:${sections[0]?.start}-${sections.at(-1)?.end} directly.`,
         });
-      let pointer = await judge(sections);
+      const pointer = await judge(sections);
       if (!pointer.ok) return finish({ refusal: pointer.error });
-      let shrunk = false;
-      if ((pointer.ranked[0]?.p ?? 0) < LOCATE_GRAY_MIN) {
-        const ids = pointer.ranked
-          .filter((s) => s.id !== "none")
-          .slice(0, LOCATE_SHRINK_TOP)
-          .map((s) => s.id);
-        sections = ids.flatMap((id) => sections.filter((s) => s.id === id));
-        pointer = await judge(sections);
-        if (!pointer.ok) return finish({ refusal: pointer.error });
-        shrunk = true;
-        if (twoStage)
-          limitations.push({
-            fact: "two-stage pointer: shrinking re-ask not measured for outlines",
-            next: "read the selected evidence",
-          });
-        limitations.push({
-          fact: "pointer below gray threshold: narrowed to top three plus none",
-          next: "read both candidates or search elsewhere",
-        });
-      }
       const head = pointer.ranked[0];
       if (!head) return finish({ refusal: "Pointer probabilities missing." });
       const displayed = locateDisplay(
         args.path,
         sections,
         pointer.ranked,
-        shrunk || planUnsure,
+        planUnsure,
       );
       if (!displayed)
         return finish({ refusal: "Pointer probabilities missing." });

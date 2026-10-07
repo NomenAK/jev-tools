@@ -20,7 +20,7 @@ The dependency-free `src/result-types.ts` defines `ResultReportV1`; `core/result
 
 ## Typed intents and fixed checks
 
-Caller intents compile to typed questions with canonical options and exact statement text. Verification of one combined situation preserves the distinction between holds, contradicted, not addressed and cannot tell, with an exact-statement cross-check that cannot override missing evidence. Custom questions remain uncalibrated. Diff checks use reviewed questions over before/after evidence units; tests are evidence, not changed units to judge. A matrix asks boolean cells across units; a pointer chooses one candidate or none. Neither executes the code.
+Caller intents compile to typed questions with canonical options and exact statement text. Verification of one combined situation preserves the distinction between holds, contradicted, not addressed and cannot tell, with an exact-statement cross-check that cannot override missing evidence and a same-subject check, judged in a second round only for contradicted verdicts, that demotes them to unsure when the refuting evidence may concern another subject — or when the control itself is missing, unjudged, or refused by the budget. Custom questions remain uncalibrated. Diff checks use reviewed questions over before/after evidence units; tests are evidence, not changed units to judge. A matrix asks boolean cells across units; a pointer chooses one candidate or none. Neither executes the code.
 
 ## Probability is not proof
 
@@ -36,6 +36,8 @@ Successful non-command judgments are cached only in session memory by canonical 
 
 `src/texts/instructions.ts` is the versioned source for host policy, evidence guidance and current-state presentation. `node scripts/generate-instructions.ts` updates checked-in omp/MCP fragments; `--check` detects drift. Jev is discretionary when it can inform an open decision; native decisive evidence requires no certification call. Unchanged retries and mandatory risk/docs sequences are not recovery policy. pi/omp retain the opt-out documentation hook; MCP has no replacement obligation. Final presentation distinguishes native execution, Jev's static judgment and reported evidence, preserving independent material reservations without requiring an exhaustive history registry.
 
+Two checks remove a claim's apparent support rather than judging it again. Attribution re-judges a locate reading without the file it pointed at: when the selection changes without that evidence the reading is `attributed` to it, and when the same selection persists it `does not rest on it`. Duplicated evidence — the same text repeated in the state note or command output — can preserve a selection without the file, so either outcome is an evidence-dependence result, not dependency or causality proof. Caller analysis requires a unique coordinated call site, so a before/after caller appears once and an ambiguous or duplicated candidate is reported as a `binding_unknown` limit naming what could not be resolved. Both are static: neither establishes that a failure occurs at runtime, and neither silently drops the evidence it could not attribute.
+
 ## Policy thresholds
 
 Values below are implementation policy, not measurement results, universal accuracy guarantees or settings to edit during a session. Boolean bands preserve weak answers as unsure; choice bands require a clear leader. Fixed findings use a separate threshold. Test selection favors retaining potentially affected tests and whole-file commands when name filtering is fragile.
@@ -50,8 +52,9 @@ Values below are implementation policy, not measurement results, universal accur
 | `ORDER_REVERSE_BELOW = 0.85` | Recheck ambiguous substantive option order and expose order sensitivity instead of promoting it. |
 | `ORDER_DISAGREE_MIN = 0.1` | Recheck ambiguous substantive option order and expose order sensitivity instead of promoting it. |
 | `CANNOT_TELL_MIN = 0.3` | Preserve an explicit missing-evidence outcome before applying ordinary verdict bands. |
+| `SAME_SUBJECT_MIN = 0.5` | Demote a contradicted verdict to unsure when the refuting evidence may concern another entity, file, version, run or moment; never promotes or affects other outcomes. A policy threshold for when a control's disagreement outweighs an answer, not a calibrated accuracy figure. |
 | `FLAG_MIN = 0.7` | Use one finding threshold across fixed review checks, distinct from caller-ask bands. |
-| `SELECT_MIN = 0.5` | Prefer running an extra test over dropping a potentially affected test. |
+| `SELECT_MIN = 0.5` | Prefer running an extra test over dropping a potentially affected test. A conservative-selection policy: it widens what runs, and is not a claim that the test is affected. |
 | `SELECT_FILE_SHARE = 0.8` | Run the whole file when filtering would save little or introduce fragile name selection. |
 | `DOCS_CHECK_MIN = 0.2` | Surface potentially stale wording for manual checking without making it a finding. |
 | `WITNESS_LURE_MAX = 0.15` | Use size-aware decoy limits to detect a biased preset setup. |
@@ -63,7 +66,7 @@ Values below are implementation policy, not measurement results, universal accur
 
 ## Engineering bounds
 
-Collection, transport and display limits have separate purposes. The state limit counts serialized characters; byte admission and token planning are different checks. Token estimates plan batching, not guaranteed tokenizer acceptance. Command stream limits are checked after execution and do not cap disk use or stop a running command.
+Collection, transport and display limits have separate purposes. The state limit counts serialized characters; byte admission and token planning are different checks. Token estimates are heuristics used for both request packing and per-evaluation admission; they are not measurements and do not guarantee tokenizer acceptance, and an estimate under the bound is not a promise the endpoint will accept it. Command stream limits are checked after execution and do not cap disk use or stop a running command.
 
 <details>
 <summary>Collection, transport and display constants</summary>
@@ -84,12 +87,13 @@ Collection, transport and display limits have separate purposes. The state limit
 | `UNIT_MAX_CHARS = 6000` | Keep changed evidence focused through slices/hunks with local context. |
 | `UNIT_CONTEXT_LINES = 8` | Keep changed evidence focused through slices/hunks with local context. |
 | `CLOSURE_MAX_CHARS = 20000` | Bound automatically added static declarations; the retained budget is not a demonstrated optimum or a completeness guarantee. |
-| `REQUEST_MAX_TOKENS = 60000` | Leave planning headroom when forming question batches, without rejecting admissible states on a heuristic alone. |
-| `QUESTION_TOKENS = 1 / 3.3` | Estimate batches only; these coefficients are not exact costs or universal tokenizer bounds. |
-| `STATE_TOKENS = 0.283` | Estimate batches only; these coefficients are not exact costs or universal tokenizer bounds. |
-| `REQUEST_BASE_TOKENS = 456` | Estimate batches only; these coefficients are not exact costs or universal tokenizer bounds. |
-| `RATE_PER_SECOND = 8` | Share throughput and in-flight limits across requests rather than mistaking concurrency for rate control. |
-| `CONCURRENCY = 8` | Share throughput and in-flight limits across requests rather than mistaking concurrency for rate control. |
+| `REQUEST_MAX_TOKENS = 60000` | Bound a whole request when packing question groups, and keep indivisible groups intact: packing only starts a new request when one does not fit, and a single group that exceeds the bound is still sent so the endpoint decides. This row governs packing only; admitting a question at all is decided separately by `EVALUATION_MAX_TOKENS`. |
+| `EVALUATION_MAX_TOKENS = 30000` | Bound one evaluation — the shared state plus a single question — using the same planning coefficients. A question whose local estimate exceeds this is not sent: it is returned `unjudged` with the estimate. The estimate is a heuristic, so this is an engineering bound checked before the request, not a measurement of the question's real token count and not a guarantee that a question inside the bound will be accepted. |
+| `QUESTION_TOKENS = 1 / 3.3` | Estimate request packing and per-evaluation admission; these coefficients are not exact costs or universal tokenizer bounds. |
+| `STATE_TOKENS = 0.283` | Estimate request packing and per-evaluation admission; these coefficients are not exact costs or universal tokenizer bounds. |
+| `REQUEST_BASE_TOKENS = 456` | Estimate request packing and per-evaluation admission; these coefficients are not exact costs or universal tokenizer bounds. |
+| `RATE_PER_SECOND = 32` | Share throughput and in-flight limits across requests rather than mistaking concurrency for rate control. |
+| `CONCURRENCY = 16` | Share throughput and in-flight limits across requests rather than mistaking concurrency for rate control. The same constant also bounds local parallel work (file admission, caller metadata), which is a separate batching decision that does not consult the pool. |
 | `TIMEOUT_MS = 10000` | Bound transport waiting and retry attempts. |
 | `REQUEST_ATTEMPTS = 3` | Bound transport waiting and retry attempts. |
 | `RETRY_BASE_MS = 500` | Back off transient failures with a bounded delay and handle longer server delays explicitly. |
@@ -97,6 +101,7 @@ Collection, transport and display limits have separate purposes. The state limit
 | `HTTP_ERROR_MAX_CHARS = 300` | Keep error diagnostics concise and redact credentials. |
 | `GIT_BLOB_BATCH_SIZE = 400` | Bound historical blob batches so object IDs and options fit command-line limits. |
 | `RUNNER_PACKAGE_MAX_BYTES = 65536` | Bound local runner-version metadata reads without sending package contents as judgment evidence. |
+| `IMPORT_FROM_LOOKAHEAD_TOKENS = 100` | Bound the token scan for a static `from` clause; longer statements fall back to dynamic. |
 
 ### Command evidence
 
@@ -113,6 +118,8 @@ Collection, transport and display limits have separate purposes. The state limit
 | `OUTPUT_LINE_MAX_CHARS = 8192` | Bound streaming line/shape bookkeeping and report the resulting limits explicitly. |
 | `OUTPUT_SHAPE_MAX_COUNT = 2048` | Bound streaming line/shape bookkeeping and report the resulting limits explicitly. |
 | `OUTPUT_FAILURE_WINDOW_LINES = 20` | Preserve local failure neighborhoods when identifying the failing test. |
+| `OUTPUT_BUDGET_SLACK_CHARS = 16` | Leave room for JSON punctuation growth when fitting selected passages into the state budget. |
+| `OUTPUT_MIN_BUDGET_CHARS = 100` | Refuse passage selection below this; narrower than a useful output excerpt. |
 
 ### Documentation collection and result display
 
@@ -120,6 +127,7 @@ Collection, transport and display limits have separate purposes. The state limit
 |---|---|
 | `DOCS_MAX_SECTIONS = 40` | Bound the set of existing Markdown sections judged by the documentation preset. |
 | `HOOK_BUDGET_MS = 15000` | Limit automatic run-end work without turning failures into a blocking host loop. |
+| `RUN_END_DOCS_MAX_CALLS = 8` | Bound the automatic run-end docs check to at most this many Jev calls. |
 | `DOCS_COLLECT_BUDGET_MS = 750` | Stop progressive collection with omissions visible; this is not a strict wall-time or coverage guarantee. |
 | `DOCS_NAME_MAX_FILES = 32` | Bound name-owner bookkeeping and per-anchor traversal rather than claiming complete repository reachability. |
 | `DOCS_ANCHOR_MAX_FILES = 32` | Bound name-owner bookkeeping and per-anchor traversal rather than claiming complete repository reachability. |
@@ -157,9 +165,7 @@ Collection, transport and display limits have separate purposes. The state limit
 | Constant and value | Purpose |
 |---|---|
 | `LOCATE_MIN_KB = 19` | Route small files to direct reading; eligibility uses file bytes, not tokenization. |
-| `LOCATE_VERDICT_MIN = 0.7` | Distinguish one clear range, two plausible ranges and a weak choice requiring narrowing. |
-| `LOCATE_GRAY_MIN = 0.4` | Distinguish one clear range, two plausible ranges and a weak choice requiring narrowing. |
-| `LOCATE_SHRINK_TOP = 3` | Retry only within a narrowed shortlist plus `none`, rather than appending arbitrary context. |
+| `LOCATE_VERDICT_MIN = 0.7` | Distinguish one clear range from two plausible ranges. |
 | `LOCATE_SECTION_MAX_LINES = 150` | Keep fallback sections bounded while avoiding tiny fragments. |
 | `LOCATE_SECTION_MIN_LINES = 8` | Keep fallback sections bounded while avoiding tiny fragments. |
 | `LOCATE_WINDOW_LINES = 80` | Bound streamed windows and their display labels. |
@@ -196,4 +202,4 @@ Optional native syntax parsing and file-search acceleration can be absent. Tools
 
 ## Architecture decisions
 
-See the [architecture decision records](adr/) for durable trade-offs. Start with the [README](../README.md) for installation and follow its six tool references for complete parameter contracts. MCP clients: [setup guide](mcp.md) and [agent instructions](agent-instructions.md).
+See the [architecture decision records](adr/) for durable trade-offs. Start with the [README](../README.md) for installation and follow its six tool references for complete parameter contracts. [How the tools work](internals/README.md) explains the pipelines stage by stage. MCP clients: [setup guide](mcp.md) and [agent instructions](agent-instructions.md).

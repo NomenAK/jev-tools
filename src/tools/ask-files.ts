@@ -10,14 +10,14 @@ import {
 import { shareGitInventory } from "../adapters/git-inventory.ts";
 import { hostUsage } from "../adapters/usage.ts";
 import { STATE_MAX_CHARS } from "../constants.ts";
-import { compileAsks, readAsks, reverseQuestions } from "../core/asks.ts";
+import {
+  compileAsks,
+  readAsks,
+  reverseQuestions,
+  sameSubjectQuestions,
+} from "../core/asks.ts";
 import { checkIntegrity } from "../core/integrity.ts";
-import type {
-  AnswerInput,
-  BudgetRefusal,
-  Envelope,
-  EnvelopeInput,
-} from "../core/output.ts";
+import type { AnswerInput, Envelope, EnvelopeInput } from "../core/output.ts";
 import { buildEnvelope } from "../core/output.ts";
 import {
   type Action,
@@ -39,6 +39,7 @@ import type { ToolDependencies } from "../runtime.ts";
 import { ASK_FILES_DESCRIPTION } from "../texts/ask-files.ts";
 import { NOT_CONFIGURED } from "../texts/configuration.ts";
 import { asksParameter } from "./ask-schema.ts";
+import { createJudgeOptions } from "./judge-options.ts";
 
 export const askFilesParameters = Type.Object(
   {
@@ -74,7 +75,7 @@ export function createAskFilesTool(dependencies: ToolDependencies) {
           promptSnippet:
             "Typed answers about many files from intents you declare, without reading them",
           promptGuidelines: [
-            "jev_ask_files: put every ask in one call; declare intents (verify, classify, rate, decide), never raw questions",
+            "jev_ask_files: put every ask in one call; prefer typed intents (verify, classify, rate, decide) over free",
             "jev_ask_files: use it to decide what to read, then read only the files that matter",
           ],
         }),
@@ -312,34 +313,21 @@ export function createAskFilesTool(dependencies: ToolDependencies) {
           refusal: `required evidence exceeds STATE_MAX_CHARS=${STATE_MAX_CHARS}`,
         });
       }
-      let sent = 0;
-      let budget: BudgetRefusal | undefined;
-      const options = {
+      const { options, budget } = createJudgeOptions({
         signal,
-        ...runtime.session.requestGate(),
-        admissionCause: () =>
-          budget?.kind === "session"
-            ? ("session_budget" as const)
-            : ("call_budget" as const),
-        beforeRequest: (count: number) => {
-          if (args.max_calls !== undefined && sent >= args.max_calls) {
-            budget = {
-              kind: "max_calls",
-              message: `max_calls=${args.max_calls} reached`,
-            };
-            return { ok: false as const, error: budget.message };
-          }
-          const admission = runtime.session.admit(count);
-          if (!admission.ok) {
-            budget = { kind: "session", message: admission.error };
-            return admission;
-          }
-          sent++;
-          return admission;
-        },
-        onUsage: (usage: { inputTokens: number; costUsd: number }) =>
-          runtime.session.recordUsage(usage),
-      };
+        maxCalls: args.max_calls,
+        session: runtime.session,
+      });
+      // Same-subject controls are judged in a second round only, per file,
+      // for contradicted first-round verdicts.
+      const secondRound = new Set(
+        plan.readings.flatMap((reading) =>
+          reading.sameSubject ? [reading.sameSubject] : [],
+        ),
+      );
+      const firstRound = Object.fromEntries(
+        Object.entries(plan.questions).filter(([id]) => !secondRound.has(id)),
+      );
       const accumulate = (result: JudgmentMetadata) => {
         totals.calls += result.calls ?? 0;
         totals.questions += result.questions ?? 0;
@@ -361,7 +349,7 @@ export function createAskFilesTool(dependencies: ToolDependencies) {
                 .digest("hex"),
             },
           ]);
-          const initial = await client.judge(state, plan.questions, {
+          const initial = await client.judge(state, firstRound, {
             ...options,
             groups: plan.groups,
           });
@@ -387,6 +375,26 @@ export function createAskFilesTool(dependencies: ToolDependencies) {
                       },
                     ]),
                   );
+            }
+            // Same-subject controls: one extra judge call for every
+            // contradicted first-round verdict. It counts against max_calls
+            // through options; a refused or failed round leaves each control
+            // unjudged so readAsks demotes the contradiction.
+            const controls = sameSubjectQuestions(
+              plan,
+              initial.answers,
+              reverseAnswers,
+            );
+            if (Object.keys(controls).length) {
+              const second = await client.judge(state, controls, options);
+              accumulate(second);
+              if (second.ok) Object.assign(initial.answers, second.answers);
+              else
+                for (const id of Object.keys(controls))
+                  initial.answers[id] = {
+                    type: "unjudged",
+                    reason: second.error,
+                  };
             }
           }
           const answers: AnswerInput[] = initial.ok
@@ -447,8 +455,8 @@ export function createAskFilesTool(dependencies: ToolDependencies) {
               raw?.type === "unjudged" ? raw.cause : row.initial.failureCause;
             const links = diagnose(
               cause ??
-                (budget
-                  ? budget.kind === "session"
+                (budget()
+                  ? budget()?.kind === "session"
                     ? "session_budget"
                     : "call_budget"
                   : "control_failure"),
@@ -536,7 +544,7 @@ export function createAskFilesTool(dependencies: ToolDependencies) {
         answers,
         unjudged,
         unchecked,
-        budget,
+        budget: budget(),
         lines: skipped.length
           ? [{ type: "list", title: "skipped", items: skipped }]
           : [],

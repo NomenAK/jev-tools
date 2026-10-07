@@ -14,6 +14,7 @@ import { attachRunnerVersions } from "../adapters/runner-version.ts";
 import { collectTestInventory } from "../adapters/test-inventory.ts";
 import { hostUsage } from "../adapters/usage.ts";
 import {
+  CHOICE_MAX_OPTIONS,
   SELECT_MIN,
   STATE_MAX_CHARS,
   WITNESS_AUTO_MIN_CELLS,
@@ -29,7 +30,6 @@ import type {
   EnvelopeInput,
   Limitation,
 } from "../core/output.ts";
-import { buildEnvelope } from "../core/output.ts";
 import {
   type Cause,
   type ResultReportV1,
@@ -54,6 +54,7 @@ import {
 import { renderResultReport } from "../render.ts";
 import type { ToolDependencies } from "../runtime.ts";
 import { SELECT_TESTS_DESCRIPTION } from "../texts/select-tests.ts";
+import { createJudgeOptions, finishToolCall } from "./judge-options.ts";
 import { controlsFor, ReviewReport, reportMetrics } from "./review-report.ts";
 
 export const selectTestsParameters = Type.Object(
@@ -161,8 +162,19 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
       const report = new ReviewReport();
       let costKnown = false;
       let unknownCost = false;
-      let sent = 0;
-      let budget: BudgetRefusal | undefined;
+      const {
+        options: judgeOptions,
+        budget: gateBudget,
+        spent,
+      } = createJudgeOptions({
+        signal,
+        maxCalls: args.max_calls,
+        session: runtime.session,
+      });
+      // The state pre-check below refuses a request the gate would refuse
+      // anyway; recording it here keeps the reported budget identical.
+      let preflight: BudgetRefusal | undefined;
+      const budget = (): BudgetRefusal | undefined => preflight ?? gateBudget();
       const finish = (input: Omit<EnvelopeInput, "yield">, cause?: Cause) => {
         const limitKeys = new Set<string>();
         const uniqueLimits = input.limitations?.filter((limit) => {
@@ -171,16 +183,18 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
           limitKeys.add(key);
           return true;
         });
-        const envelope = buildEnvelope({
-          ...input,
-          limitations: uniqueLimits,
-          yield: {
+        const { envelope } = finishToolCall(
+          runtime,
+          ctx,
+          started,
+          { ...input, limitations: uniqueLimits },
+          {
             ...totals,
             costUsd:
               costKnown && !unknownCost ? totals.usage.costUsd : undefined,
             elapsedMs: performance.now() - started,
           },
-        });
+        );
         if (input.refusal) {
           report.refusal = true;
           report.diagnose(cause ?? "internal_error", input.refusal);
@@ -198,8 +212,6 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
           evidenceContext,
           reportMetrics(envelope),
         );
-        runtime.session.record(envelope);
-        runtime.guide.deliver(ctx);
         const details: Judgment & {
           result: ResultReportV1;
           limitations?: readonly Limitation[];
@@ -552,37 +564,20 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
             cause: "evidence_too_large" as const,
             error: `required evidence exceeds STATE_MAX_CHARS=${STATE_MAX_CHARS}`,
           };
-        if (args.max_calls !== undefined && sent >= args.max_calls) {
-          budget = {
+        if (args.max_calls !== undefined && spent() >= args.max_calls) {
+          preflight = {
             kind: "max_calls",
             message: `max_calls=${args.max_calls} reached`,
           };
-          return { ok: false as const, error: budget.message };
+          return { ok: false as const, error: preflight.message };
         }
         if (!client) return { ok: false as const, error: "Jev unavailable" };
         const result = await client.judge(state, questions, {
-          signal,
+          ...judgeOptions,
           witnesses: witnessIds,
           ...runtime.session.requestGate(),
           admissionCause: () =>
-            budget?.kind === "session" ? "session_budget" : "call_budget",
-          beforeRequest: (questionCount) => {
-            if (args.max_calls !== undefined && sent >= args.max_calls) {
-              budget = {
-                kind: "max_calls",
-                message: `max_calls=${args.max_calls} reached`,
-              };
-              return { ok: false, error: budget.message };
-            }
-            const admitted = runtime.session.admit(questionCount);
-            if (!admitted.ok) {
-              budget = { kind: "session", message: admitted.error };
-              return admitted;
-            }
-            sent++;
-            return admitted;
-          },
-          onUsage: (usage) => runtime.session.recordUsage(usage),
+            budget()?.kind === "session" ? "session_budget" : "call_budget",
         });
         totals.calls += result.calls ?? 0;
         totals.questions += result.questions ?? 0;
@@ -691,12 +686,32 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
           }
           await Promise.all(
             prepared.batches.map(async (batch) => {
+              // One option per changed unit plus none: past the cap the
+              // pointer is skipped and every scenario stays selected, which
+              // is the conservative outcome for unjudged tests.
+              if (units.length + 1 > CHOICE_MAX_OPTIONS) {
+                for (const unit of units) incompleteUnits.add(unit.id);
+                ids.push(...batch.scenarios.map((scenario) => scenario.id));
+                for (const scenario of batch.scenarios)
+                  unjudged.push({
+                    label: `${entry.path}: ${scenario.name}`,
+                    reason: `unit pointer exceeds the choice option cap including none (${units.length} changed units); not judged`,
+                    next: "run this test with the project runner",
+                  });
+                limitations.push({
+                  cause: "unit pointer exceeds the choice option cap",
+                  path: entry.path,
+                  fact: `unit pointer exceeds the choice option cap: ${entry.path} (${units.length} changed units)`,
+                  next: "run the affected tests with the project runner",
+                });
+                return;
+              }
               const questions: Record<string, Question> = Object.fromEntries(
                 batch.scenarios.map((scenario) => [
                   scenario.id,
                   {
                     type: "choice" as const,
-                    instructions: `When the test named ${scenario.name} runs, which changed unit does it execute or read, directly or through the functions it calls?`,
+                    instructions: `Which changed unit appears in the code the test named ${scenario.name} runs, as shown in the state: the test body and the shown functions it reaches?`,
                     criteria: Object.fromEntries([
                       ...units.map((unit) => [
                         unit.id,
@@ -715,13 +730,13 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
                 report.failure(
                   result,
                   batchIds,
-                  budget
-                    ? budget.kind === "session"
-                      ? "session_budget"
-                      : "call_budget"
-                    : !client
-                      ? "not_configured"
-                      : undefined,
+                  budget()?.kind === "session"
+                    ? "session_budget"
+                    : budget()
+                      ? "call_budget"
+                      : !client
+                        ? "not_configured"
+                        : undefined,
                 );
               else
                 for (const scenario of batch.scenarios) {
@@ -744,13 +759,15 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
                   };
                 }
               if (!result.ok) {
-                fallback ||= !budget;
+                fallback ||= !budget();
                 for (const unit of units) incompleteUnits.add(unit.id);
                 ids.push(...batch.scenarios.map((scenario) => scenario.id));
                 unjudged.push({
                   label: entry.path,
                   reason: result.error,
-                  next: budget ? "raise max_calls" : "run all discovered tests",
+                  next: budget()
+                    ? "raise max_calls"
+                    : "run all discovered tests",
                 });
                 return;
               }
@@ -923,13 +940,13 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
                     report.failure(
                       result,
                       [id],
-                      budget
-                        ? budget.kind === "session"
-                          ? "session_budget"
-                          : "call_budget"
-                        : !client
-                          ? "not_configured"
-                          : undefined,
+                      budget()?.kind === "session"
+                        ? "session_budget"
+                        : budget()
+                          ? "call_budget"
+                          : !client
+                            ? "not_configured"
+                            : undefined,
                     );
                   else
                     report.answer(
@@ -955,7 +972,7 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
                 }
               for (const unit of units) {
                 if (!result.ok) {
-                  fallback ||= !budget;
+                  fallback ||= !budget();
                   incompleteUnits.add(unit.id);
                   continue;
                 }
@@ -1192,7 +1209,7 @@ export function createSelectTestsTool(dependencies: ToolDependencies) {
             ...diff.units.map((unit) => unit.file),
           ]),
         ],
-        ...(budget ? { budget } : {}),
+        ...(budget() ? { budget: budget() } : {}),
         lines: commands.commands.map((command) => ({
           type: "command" as const,
           ...command,

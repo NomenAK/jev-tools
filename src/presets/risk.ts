@@ -226,29 +226,46 @@ function riskQuestion(unit: EvidenceUnit, dimension: RiskDimension): Question {
   };
 }
 
-export function prepareRiskSeverity(
-  unit: EvidenceUnit,
-  dimension: BuiltinRiskDimension,
-  callerEvidence?: Json,
-): { state: State; questions: Record<string, Question> } {
-  const state: State = { changedUnits: [{ ...unit }], dimension };
-  if (callerEvidence !== undefined) state.callerEvidence = callerEvidence;
-  return {
-    state,
-    questions: {
-      severity: {
-        type: "score",
-        instructions:
-          "Assuming the shown unit exhibits the suspected concern in the stated dimension, rate the likely production impact. Preserve the complete before/after caller and provider evidence when present.",
-        criteria: [
-          "No meaningful impact or no supported issue",
-          "Minor or narrowly limited impact",
-          "Significant correctness, reliability, compatibility, or security impact",
-          "Critical security, data-loss, or widespread outage impact",
-        ],
-      },
-    },
-  };
+export interface SeverityCell {
+  unit: EvidenceUnit;
+  dimension: BuiltinRiskDimension;
+  callerEvidence?: Json;
+}
+
+/**
+ * One severity request per unit: every dimension of that unit shares its state,
+ * so `prepareBatches` packs their score questions into a single request. The
+ * state carries only the unit and its caller evidence; the dimension each score
+ * question concerns is stated in that question, because Jev never sees question
+ * ids and a single state field cannot name several dimensions at once.
+ */
+export function prepareSeverityBatch(cells: readonly SeverityCell[]): {
+  state: State;
+  questions: Record<string, Question>;
+  ids: string[];
+} {
+  const [first, ...rest] = cells;
+  if (!first) return { state: {}, questions: {}, ids: [] };
+  const state: State = { changedUnits: [{ ...first.unit }] };
+  if (first.callerEvidence !== undefined)
+    state.callerEvidence = first.callerEvidence;
+  const questions: Record<string, Question> = {};
+  const ids: string[] = [];
+  for (const cell of [first, ...rest]) {
+    const id = `${cell.unit.id}_${cell.dimension}`;
+    ids.push(id);
+    questions[id] = {
+      type: "score",
+      instructions: `Assuming changed unit ${cell.unit.id} (${cell.unit.file}, ${cell.unit.name}) exhibits the suspected concern in the "${cell.dimension}" dimension, rate the likely production impact of that concern only. Preserve the complete before/after caller and provider evidence when present.`,
+      criteria: [
+        "No meaningful impact or no supported issue",
+        "Minor or narrowly limited impact",
+        "Significant correctness, reliability, compatibility, or security impact",
+        "Critical security, data-loss, or widespread outage impact",
+      ],
+    };
+  }
+  return { state, questions, ids };
 }
 
 export function evaluateWitnessHealth(

@@ -110,6 +110,139 @@ function assertUncertainAbsence(result: ResultReportV1): void {
     ),
   );
 }
+test("unit pointer past the option cap stays selected and names the cap", async () => {
+  for (const count of [254, 255]) {
+    const cwd = await mkdtemp(join(tmpdir(), "jev-select-cap-"));
+    try {
+      await mkdir(join(cwd, "src"));
+      await mkdir(join(cwd, "test"));
+      const lines = Array.from(
+        { length: count },
+        (_, i) => `export function f${i}() { return ${i}; }`,
+      );
+      await writeFile(join(cwd, "src/big.js"), `${lines.join("\n")}\n`);
+      // Dynamic import on purpose: static reachability cannot name all
+      // changed units, so the candidate keeps every diff unit and the
+      // pointer faces the full option count.
+      await writeFile(
+        join(cwd, "test/big.test.js"),
+        "import {test} from 'node:test';\ntest('big', async () => { const big = await import('../src/big.js'); return Object.keys(big).length; });\n",
+      );
+      await run("git", ["init", "-q"], { cwd });
+      await run("git", ["add", "."], { cwd });
+      await run(
+        "git",
+        [
+          "-c",
+          "user.name=Test",
+          "-c",
+          "user.email=test@example.invalid",
+          "commit",
+          "-qm",
+          "base",
+        ],
+        { cwd },
+      );
+      await writeFile(
+        join(cwd, "src/big.js"),
+        `${lines.map((line) => `${line} // changed`).join("\n")}\n`,
+      );
+      const asked: Question[] = [];
+      const client: JevClient = {
+        clearCache() {},
+        async judge(_state, questions, options) {
+          asked.push(...Object.values(questions));
+          options?.beforeRequest?.(Object.keys(questions).length);
+          return {
+            ok: true,
+            calls: 1,
+            questions: Object.keys(questions).length,
+            answers: Object.fromEntries(
+              Object.entries(questions).map(([id, q]) => [
+                id,
+                q.type === "choice"
+                  ? {
+                      type: "choice",
+                      source: "fresh" as const,
+                      choice: "none",
+                      confidence: 0.9,
+                      probabilities: { none: 0.9 },
+                    }
+                  : { type: "bool", source: "fresh" as const, p: 0.01 },
+              ]),
+            ),
+          };
+        },
+      };
+      const result = await createSelectTestsTool(dependencies(client)).execute(
+        "cap",
+        { base: "HEAD", witnesses: "off" },
+        undefined,
+        undefined,
+        { cwd },
+      );
+      const text = result.content[0]?.text ?? "";
+      assert.ok(
+        asked.every(
+          (q) => q.type !== "choice" || Object.keys(q.criteria).length <= 255,
+        ),
+        "no choice exceeds the cap including none",
+      );
+      if (count === 254) {
+        assert.ok(
+          asked.some(
+            (q) =>
+              q.type === "choice" && Object.keys(q.criteria).length === 255,
+          ),
+          "boundary pointer still judged",
+        );
+        assert.doesNotMatch(text, /choice option cap/);
+      } else {
+        // Past the choice cap the pointer is skipped and recorded as a
+        // limitation while coverage still judges every unit; the
+        // conservative outcome keeps every scenario selected.
+        assert.ok(
+          asked.every((q) => q.type !== "choice"),
+          "over-cap pointer asks no choice question",
+        );
+        assert.ok(
+          result.details.limitations?.some(
+            (limitation) =>
+              limitation.cause === "unit pointer exceeds the choice option cap",
+          ),
+          "over-cap pointer recorded as a limitation",
+        );
+        const report = result.details.result;
+        const pointer = report.items.filter(
+          (item) => !item.id.startsWith("coverage:"),
+        );
+        assert.equal(pointer.length, 1);
+        assert.ok(
+          pointer.every(
+            (item) =>
+              item.treatment === "not_judged" &&
+              item.selection?.selected === true &&
+              item.selection.reason === "conservative_fallback",
+          ),
+        );
+        const coverage = report.items.filter((item) =>
+          item.id.startsWith("coverage:"),
+        );
+        assert.equal(coverage.length, 255);
+        assert.ok(
+          coverage.every(
+            (item) =>
+              item.treatment === "judged" &&
+              item.source === "fresh" &&
+              item.selection?.selected === true,
+          ),
+        );
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  }
+});
 test("tracked ignored invalid workspace manifests cannot silently skip local bare imports", async () => {
   const cwd = await fixture();
   try {
@@ -365,6 +498,70 @@ test("selection sees unchanged intermediates, skips unreachable tests and checks
     );
     const filteredText = filtered.content[0]?.text ?? "";
     assert.match(filteredText, /command: node --test test\/money\.test\.js\n/);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+test("pointer judges shown reachability: changed symbol absent from the test body", async () => {
+  const cwd = await fixture();
+  const states: State[] = [];
+  const client: JevClient = {
+    clearCache() {},
+    async judge(state, questions, options) {
+      states.push(state);
+      options?.beforeRequest?.(Object.keys(questions).length);
+      return {
+        ok: true,
+        calls: 1,
+        questions: Object.keys(questions).length,
+        answers: Object.fromEntries(
+          Object.entries(questions).map(([id, q]) => [
+            id,
+            q.type === "choice"
+              ? {
+                  type: "choice",
+                  choice: "none",
+                  confidence: 0.9,
+                  probabilities: { none: 0.9 },
+                }
+              : { type: "bool", p: 0.01 },
+          ]),
+        ),
+      };
+    },
+  };
+  try {
+    await createSelectTestsTool(dependencies(client)).execute(
+      "1",
+      { base: "HEAD", witnesses: "off" },
+      undefined,
+      undefined,
+      { cwd },
+    );
+    const pointer = states.find((state) =>
+      JSON.stringify(state.testFile ?? {}).includes("invoice total"),
+    );
+    assert.ok(pointer, "pointer batch carries the invoice scenario");
+    const file = pointer.testFile;
+    assert.ok(
+      file && typeof file === "object" && !Array.isArray(file),
+      "pointer batch carries a test file",
+    );
+    const body = file.text;
+    assert.equal(typeof body, "string");
+    if (typeof body !== "string") return;
+    // The changed symbol never appears in the test body: only the
+    // intermediate helper is named there.
+    assert.match(body, /invoice/);
+    assert.doesNotMatch(body, /money/);
+    // Reachability computed in code puts the intermediate and the changed
+    // unit into the same judged state, so the pointer reads shown code.
+    const shown = JSON.stringify({
+      imports: pointer.imports,
+      changedUnits: pointer.changedUnits,
+    });
+    assert.match(shown, /function invoice/);
+    assert.match(shown, /function money/);
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

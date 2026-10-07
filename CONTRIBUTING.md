@@ -30,7 +30,7 @@ Agent policy and result-reading guidance are versioned in `src/texts/instruction
 
 Maintainers release by pushing a `vX.Y.Z` tag on reviewed `main`. Before tagging, set the same version in `package.json`, in both `version` fields of `server.json`, and in a `CHANGELOG.md` section; `test/server-json.test.ts` fails if they drift. [`publish.yml`](.github/workflows/publish.yml) then packs once, checks the packed MCP server, publishes the approved tarball to npm with trusted publishing, publishes `server.json` to the MCP Registry with GitHub OIDC, and creates a draft GitHub Release. Each publication step skips a version that already exists with the same content and fails on anything inconclusive.
 
-Keep optional native dependencies enabled for development. These checks make no Jev API calls and need no Jev key. Dependency installation may use the network. Some runner-identity tests skip when additional runners are unavailable locally; CI provisions those runners in [.github/workflows/ci.yml](.github/workflows/ci.yml).
+Keep optional native dependencies enabled for development. These checks make no Jev API calls and need no Jev key. Dependency installation may use the network. Some runner-identity tests skip when additional runners are unavailable locally; CI provisions those runners in [.github/workflows/ci.yml](https://github.com/NomenAK/jev-tools/blob/main/.github/workflows/ci.yml).
 
 Maintainers run a private regression probe on reviewed release candidates before release and on the published package before announcing it. Contributors do not need access to that probe or its credentials.
 

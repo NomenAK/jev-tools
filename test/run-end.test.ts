@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { promisify } from "node:util";
+import { RUN_END_DOCS_MAX_CALLS } from "../src/constants.ts";
 import {
   buildResultReport,
   known,
@@ -17,7 +18,7 @@ import type { JevClient } from "../src/jev/types.ts";
 import { RunEnd, type RunEndHost } from "../src/run-end.ts";
 import type { ToolDependencies } from "../src/runtime.ts";
 import { Session } from "../src/session.ts";
-import type { DocsCheckResult } from "../src/tools/docs-check.ts";
+import { type DocsCheckResult, runDocsCheck } from "../src/tools/docs-check.ts";
 
 const flagged: DocsCheckResult = {
   ok: true,
@@ -335,10 +336,12 @@ test("collection exhaustion without flags and cap refusal are silent", async () 
 test("total budget includes git and abandons findings using injected clock", async () => {
   let now = 0;
   let budget: number | undefined;
+  let maxCalls: number | undefined;
   const h = harness(true, {
     now: () => now,
     check: async (_deps, input) => {
       budget = input.budgetMs;
+      maxCalls = input.maxCalls;
       now = 15_001;
       return flagged;
     },
@@ -349,6 +352,7 @@ test("total budget includes git and abandons findings using injected clock", asy
   };
   assert.equal(await h.emit("session_stop"), undefined);
   assert.equal(budget, 14_000);
+  assert.equal(maxCalls, RUN_END_DOCS_MAX_CALLS);
   const git = harness(true, { now: () => now });
   now = 0;
   git.deps.exec = async () => {
@@ -440,6 +444,122 @@ test("real docs checking includes untracked code and shares session caps", async
       undefined,
     );
     assert.equal(requests, 1);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
+test("the automatic cap bounds docs requests and names the sections it skipped", async () => {
+  const cwd = await mkdtemp(join(tmpdir(), "run-end-cap-"));
+  const execute = promisify(execFile);
+  const h = harness(true);
+  let requests = 0;
+  h.deps.exec = async (command, args, options) => ({
+    ...(await execute(command, args, options)),
+    code: 0,
+    killed: false,
+  });
+  const client: JevClient = {
+    clearCache() {},
+    async judge(state, questions, options) {
+      const admitted = options?.beforeRequest?.(Object.keys(questions).length);
+      if (admitted && !admitted.ok)
+        return { ok: false, error: admitted.error, kind: "budget" };
+      requests++;
+      // Only the first judged section is reported stale; the rest exist to
+      // exhaust the cap, not to produce findings.
+      const current = ((state.docs as { path?: string }[] | undefined) ?? [])[0]
+        ?.path;
+      const stale = current === "README.md";
+      return {
+        ok: true,
+        calls: 1,
+        answers: Object.fromEntries(
+          Object.keys(questions).map((id) => [
+            id,
+            {
+              type: "choice" as const,
+              choice: stale ? "now_false" : "holds",
+              confidence: 1,
+              probabilities: { now_false: 1, holds: 1, s1: 1 },
+            },
+          ]),
+        ),
+      };
+    },
+  };
+  h.deps.client = client;
+  try {
+    await execute("git", ["init", "-q"], { cwd });
+    // More documentation sections than the automatic cap allows.
+    const count = RUN_END_DOCS_MAX_CALLS + 6;
+    const readme = Array.from(
+      { length: count },
+      (_, i) =>
+        `## Section ${i}\n\`value${i}\` in \`new${i}.ts\` returns one.\n`,
+    ).join("\n");
+    await writeFile(join(cwd, "README.md"), readme);
+    for (let i = 0; i < count; i++)
+      await writeFile(
+        join(cwd, `new${i}.ts`),
+        `export function value${i}() { return 1; }\n`,
+      );
+    await execute("git", ["add", "."], { cwd });
+    await execute(
+      "git",
+      [
+        "-c",
+        "user.name=Proof",
+        "-c",
+        "user.email=proof@example.invalid",
+        "commit",
+        "-qm",
+        "base",
+      ],
+      { cwd },
+    );
+    await execute("git", ["config", "status.showUntrackedFiles", "no"], {
+      cwd,
+    });
+    for (let i = 0; i < count; i++)
+      await writeFile(
+        join(cwd, `new${i}.ts`),
+        `export function value${i}() { return 2; }\n`,
+      );
+    let passed: number | undefined;
+    let unchecked: readonly string[] = [];
+    const hook = new RunEnd(h.deps, {
+      env: {},
+      check: async (deps, input) => {
+        passed = input.maxCalls;
+        const result = await runDocsCheck(
+          { ...deps, client, exec: deps.exec },
+          { cwd, maxCalls: input.maxCalls },
+        );
+        unchecked = [
+          ...(result.unjudged?.sections ?? []),
+          ...result.envelope.lines.flatMap((line) =>
+            line.type === "unchecked" ? line.items : [],
+          ),
+        ];
+        return result;
+      },
+    });
+    await hook.onRunEnd({ cwd });
+    assert.equal(passed, RUN_END_DOCS_MAX_CALLS);
+    assert.ok(
+      requests <= RUN_END_DOCS_MAX_CALLS,
+      `sent ${requests} requests above the automatic cap of ${RUN_END_DOCS_MAX_CALLS}`,
+    );
+    // Sections past the cap stay visible; they are never dropped silently.
+    assert.ok(
+      unchecked.length > 0,
+      `sections beyond the cap must be reported as unchecked; got ${JSON.stringify(unchecked)}`,
+    );
+    assert.ok(
+      unchecked.some((line) => /max_calls/.test(line)),
+      `expected a max_calls limit line, got: ${unchecked.join(" | ")}`,
+    );
   } finally {
     await rm(cwd, { recursive: true, force: true });
   }

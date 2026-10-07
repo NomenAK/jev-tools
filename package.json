@@ -1,6 +1,6 @@
 {
   "name": "jev-agent-tools",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "license": "MIT",
   "mcpName": "io.github.NomenAK/jev-agent-tools",
@@ -30,7 +30,14 @@
     "README.md",
     "LICENSE",
     "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
     "docs/design.md",
+    "docs/adr/",
+    "docs/README.md",
+    "docs/architecture.md",
+    "docs/guide/",
+    "docs/internals/",
     "docs/tools/jev_ask.md",
     "docs/tools/jev_ask_files.md",
     "docs/tools/jev_find_files.md",
@@ -40,10 +47,7 @@
     "docs/mcp.md",
     "docs/agent-instructions.md",
     "dist/",
-    "server.json",
-    "SECURITY.md",
-    "CONTRIBUTING.md",
-    "docs/adr/"
+    "server.json"
   ],
   "bin": {
     "jev-agent-tools-mcp": "dist/mcp/main.js"

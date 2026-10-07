@@ -18,6 +18,7 @@ import type {
   Judgment,
   JudgmentMetadata,
   Question,
+  State,
 } from "./types.ts";
 export interface JevConfig {
   url: string;
@@ -48,7 +49,7 @@ function httpError(body: unknown, text: string, apiKey: string): string {
         : body === undefined
           ? text
           : "No error message provided.";
-  const redacted = detail.replaceAll(apiKey, "[redacted]");
+  const redacted = scrub(detail, [apiKey]);
   return redacted.length > HTTP_ERROR_MAX_CHARS
     ? `${truncate(redacted, HTTP_ERROR_MAX_CHARS)}…`
     : redacted;
@@ -145,6 +146,47 @@ function canonical(value: Json): string {
 function hash(value: Json): string {
   return createHash("sha256").update(canonical(value)).digest("hex");
 }
+// Order-preserving question identity: choice criteria insertion order carries
+// the option presentation order, so reversed twins must hash differently.
+// State keeps the sorted canonical form; only questions use this.
+function canonicalOrdered(value: Json): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalOrdered).join(",")}]`;
+  if (isRecord(value))
+    return `{${Object.keys(value)
+      .map(
+        (key) =>
+          `${JSON.stringify(key)}:${canonicalOrdered(value[key] as Json)}`,
+      )
+      .join(",")}}`;
+  return JSON.stringify(value);
+}
+// Every nonempty configured key is scrubbed: a short key is still a
+// credential and must never reach the wire. The length guard only keeps
+// empty keys out: splitting on "" matches everywhere and would interleave
+// "[redacted]" between every character.
+function scrub(text: string, secrets: string[]): string {
+  let out = text;
+  for (const secret of secrets)
+    if (secret.length > 0 && out.includes(secret))
+      out = out.split(secret).join("[redacted]");
+  return out;
+}
+// The API key can reach Jev inside state text (e.g. command output) or
+// question text. Scrub it from every string before serialization, including
+// its JSON-escaped shape as it appears inside serialized payloads.
+function redactJson(value: Json, secrets: string[]): Json {
+  if (typeof value === "string") return scrub(value, secrets);
+  if (Array.isArray(value))
+    return value.map((entry) => redactJson(entry, secrets));
+  if (isRecord(value))
+    return Object.fromEntries(
+      Object.entries(value).map(([key, entry]) => [
+        key,
+        redactJson(entry as Json, secrets),
+      ]),
+    );
+  return value;
+}
 function wireQuestions(questions: Record<string, Question>) {
   return Object.fromEntries(
     Object.entries(questions).map(([id, q]) => [
@@ -194,25 +236,52 @@ export function createJevClient(
       generation++;
     },
     async judge(state, questions, options = {}): Promise<Judgment> {
-      const planned = prepareBatches(state, questions, options);
+      // Redact before hashing so the session cache stays consistent with the
+      // serialized payload. The key may also appear JSON-escaped in text.
+      const escapedKey = JSON.stringify(config.apiKey).slice(1, -1);
+      const secrets =
+        escapedKey === config.apiKey
+          ? [config.apiKey]
+          : [config.apiKey, escapedKey];
+      const safeState = redactJson(state, secrets) as State;
+      const safeQuestions = Object.fromEntries(
+        Object.entries(questions).map(([id, question]) => [
+          id,
+          redactJson(
+            JSON.parse(JSON.stringify(question)) as Json,
+            secrets,
+          ) as Question,
+        ]),
+      );
+      const planned = prepareBatches(safeState, safeQuestions, options);
       if (!planned.ok) return planned;
       const answers: Record<string, Answer> = {};
+      for (const unjudged of planned.unjudged)
+        answers[unjudged.id] = { type: "unjudged", reason: unjudged.reason };
       const meta: JudgmentMetadata = {
         calls: 0,
         questions: 0,
         cacheHits: 0,
-        cacheRequests: Object.keys(questions).length,
+        cacheRequests: Object.keys(safeQuestions).length,
         batches: [],
       };
       const epoch = generation;
-      const stateKey = hash(state);
+      const stateKey = hash(safeState);
       const keys = new Map(
-        Object.entries(questions).map(([id, q]) => [
+        Object.entries(safeQuestions).map(([id, q]) => [
           id,
-          `${stateKey}:${hash(JSON.parse(JSON.stringify(q)) as Json)}:${config.model}`,
+          `${stateKey}:${createHash("sha256")
+            .update(canonicalOrdered(JSON.parse(JSON.stringify(q)) as Json))
+            .digest("hex")}:${config.model}`,
         ]),
       );
-      const witnesses = options.witnesses ?? [];
+      // A witness the per-evaluation precheck refused is never appended to
+      // a request: it stays unjudged above, so downstream witness health
+      // sees an unavailable control and demotes instead of certifying.
+      const overBudget = new Set(planned.unjudged.map((entry) => entry.id));
+      const witnesses = (options.witnesses ?? []).filter(
+        (id) => !overBudget.has(id),
+      );
       const witnessSet = new Set(witnesses);
       const witnessKey = (group: readonly string[]) =>
         JSON.stringify([
@@ -259,11 +328,11 @@ export function createJevClient(
           return;
         }
         const selected = Object.fromEntries(
-          ids.map((id) => [id, questions[id] as Question]),
+          ids.map((id) => [id, safeQuestions[id] as Question]),
         );
         const payload = JSON.stringify({
           model: config.model,
-          state,
+          state: safeState,
           questions: wireQuestions(selected),
         });
         for (let attempt = 0; attempt < REQUEST_ATTEMPTS; attempt++) {
@@ -352,7 +421,7 @@ export function createJevClient(
                 let probeId = ids[0] as string;
                 let probeSize = Infinity;
                 for (const [id, question] of Object.entries(
-                  wireQuestions(questions),
+                  wireQuestions(safeQuestions),
                 )) {
                   const size = JSON.stringify(question).length;
                   if (size < probeSize) {
@@ -431,7 +500,7 @@ export function createJevClient(
               Number.isFinite(retryAfter) &&
               retryAfter * 1_000 > RETRY_MAX_MS
             ) {
-              const reason = `Jev HTTP 429, retry after ${retryAfter} s`;
+              const reason = `Jev HTTP 429: server asked to retry after ${retryAfter} s; not waited (limit ${RETRY_MAX_MS / 1000} s)`;
               failure ??= reason;
               missing(ids, reason, "service_unavailable");
               return;
@@ -463,7 +532,7 @@ export function createJevClient(
             // A failed diagnostic is not evidence of a token limit. Continue
             // ordinary subdivision without delivering its answer or error.
             if (diagnostic) return;
-            const reason = `Jev request failed: ${String(error).replaceAll(config.apiKey, "[redacted]")}`;
+            const reason = `Jev request failed: ${scrub(String(error), [config.apiKey])}`;
             if (options.signal?.aborted || attempt === REQUEST_ATTEMPTS - 1) {
               failure ??= reason;
               missing(
@@ -481,7 +550,7 @@ export function createJevClient(
           try {
             await clock.sleep(retryMs, options.signal);
           } catch (error) {
-            const reason = `Jev request failed: ${String(error).replaceAll(config.apiKey, "[redacted]")}`;
+            const reason = `Jev request failed: ${scrub(String(error), [config.apiKey])}`;
             failure ??= reason;
             missing(
               ids,

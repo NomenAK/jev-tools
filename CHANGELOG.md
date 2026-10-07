@@ -7,7 +7,75 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 Before 1.0.0, incompatible changes will be called out explicitly. Internal source
 modules are not a stable library API.
 
-## [Unreleased]
+## [0.4.0] - 2026-10-05
+
+### Added
+
+- Per-evaluation admission bound (`EVALUATION_MAX_TOKENS`): a question whose
+  locally estimated cost (shared state plus that one question) exceeds the
+  bound is returned `unjudged` with the estimate before any request, instead
+  of failing at the endpoint. Over-budget witnesses are likewise never sent;
+  downstream witness health treats them as unavailable controls and demotes.
+- Documentation set: a user guide under `docs/guide/` (getting started, workflows,
+  troubleshooting), tool internals under `docs/internals/`, a code map in
+  `docs/architecture.md` and an index in `docs/README.md`.
+- Same-subject control on `verify` claims (ask and per-file surfaces): a
+  `contradicted` verdict demotes to unsure when the refuting evidence may concern
+  another entity, file, version, run or moment. It is asked in a second round
+  only for `contradicted` verdicts, not on every claim.
+
+### Fixed
+
+- Order control no longer re-asks choices whose reversal would not permute the
+  presented options (0 or 1 substantive option): the byte-identical twin would
+  have been answered from the first run's cache entry, so no reverse question
+  is scheduled and the answer is read without an order control.
+- Fixed choice pointers past 255 options including `none`: the spec drift
+  pointer is omitted while requirements are still judged (drift stays
+  `unjudged` with a limitation); an over-long docs sentence pointer leaves its
+  section `unjudged` naming it; a select-tests unit pointer past the cap keeps
+  every scenario selected with an `unjudged` entry naming the cap.
+- Order-reversal control questions no longer hit the session cache entry of the
+  forward order: question identity is order-sensitive, so reversed re-judgments
+  are genuinely re-judged.
+- The configured API key value is redacted from every state and question string
+  (including its JSON-escaped shape) before serialization and cache hashing, so
+  it never reaches the request payload — whatever its length, since a short key
+  is still a credential. HTTP error bodies and network-failure reasons are
+  scrubbed through the same path, which also keeps empty keys away from
+  replacement. Commands run with the host environment minus `JEV_TOOLS_API_KEY`.
+- A 429 `retry-after` beyond the retry cap now fails with a reason saying the
+  delay was not waited out.
+
+### Changed
+
+- `jev_ask_files` verify answers distinguish `holds` / `contradicted` /
+  `not addressed` / `cannot tell` per file, with the ask-surface twin and
+  exact-statement check — 3 questions per claim in the first round, still one
+  request per file. A same-subject check is a fourth question, asked in a second
+  round only for `contradicted` verdicts; an unjudged control leaves that
+  reading `unsure`.
+- `jev_locate_in_file` readout: a leading probability at or above 0.7 is a
+  verdict, otherwise unsure lists the two best ranges; the narrow-and-re-ask
+  stage is gone.
+- `jev_check_diff` docs is a stale-sentence hint over existing wording, not a
+  missing-documentation detector. Risk severity rides one request per unit, with
+  each flagged dimension scored as its own question.
+- The automatic run-end docs check is capped at 8 Jev calls.
+- Request pacing is 32 starts per second with 16 in flight (per-pool
+  overridable). Local parallel work — per-file collection, caller search,
+  `jev_ask_files` reads — is batched by the same `CONCURRENCY` constant, not
+  by the pool.
+- Unsure `score` answers whose two most likely levels are not adjacent now say so.
+- Tool descriptions and the reading guide were rewritten for agents: a shared template, marks defined once in the guide, a tool picker, glosses for every output token, and English-language/hostile-content caveats. `COMMAND_LIMIT_NOTICE` was folded into the `jev_ask` description.
+
+### Removed
+
+- Unsourced accuracy figures: the `2/45` documentation-obligation measurement,
+  the reading guide's "1 in 100 clear verdicts" claim, and the find
+  description's "49 of 51 / 16 of 21" retrieval figures no longer appear in
+  tool output or docs.
+- `LOCATE_GRAY_MIN` / `LOCATE_SHRINK_TOP` with the shrink stage they governed.
 
 ## [0.3.0] - 2026-10-05
 
@@ -177,7 +245,8 @@ Tagged but never published to npm: the unscoped package name was rejected.
 
 Tagged but never published to npm: the publish workflow failed before upload.
 
-[Unreleased]: https://github.com/NomenAK/jev-tools/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/NomenAK/jev-tools/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/NomenAK/jev-tools/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/NomenAK/jev-tools/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/NomenAK/jev-tools/compare/v0.1.4...v0.2.0
 [0.1.4]: https://github.com/NomenAK/jev-tools/compare/v0.1.3...v0.1.4

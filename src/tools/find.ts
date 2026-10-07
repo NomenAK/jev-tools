@@ -15,12 +15,7 @@ import {
   rankFiles,
   retainFiles,
 } from "../core/find.ts";
-import {
-  type Band,
-  type BudgetRefusal,
-  buildEnvelope,
-  type EnvelopeInput,
-} from "../core/output.ts";
+import type { Band, EnvelopeInput } from "../core/output.ts";
 import { needsReverse, pointerQuestion, readPointer } from "../core/pointer.ts";
 import {
   type Action,
@@ -41,6 +36,7 @@ import { renderResultReport } from "../render.ts";
 import type { ToolDependencies } from "../runtime.ts";
 import { NOT_CONFIGURED } from "../texts/configuration.ts";
 import { FIND_DESCRIPTION } from "../texts/find.ts";
+import { createJudgeOptions, finishToolCall } from "./judge-options.ts";
 
 export const findParameters = Type.Object(
   {
@@ -110,8 +106,11 @@ export function createFindFilesTool(dependencies: ToolDependencies) {
       const limitations: NonNullable<EnvelopeInput["limitations"]>[number][] =
         [];
       const unchecked: string[] = [];
-      let budget: BudgetRefusal | undefined;
-      let sent = 0;
+      const { options, budget } = createJudgeOptions({
+        signal,
+        maxCalls: args.max_calls,
+        session: runtime.session,
+      });
       const context = contextFromEvidence(evidenceContext);
       const diagnostics: Diagnostic[] = [];
       const actions: Action[] = [];
@@ -208,21 +207,28 @@ export function createFindFilesTool(dependencies: ToolDependencies) {
         });
       };
       const finish = (input: Omit<EnvelopeInput, "yield">) => {
-        const envelope = buildEnvelope({
-          ...input,
-          limitations: [...limitations, ...(input.limitations ?? [])],
-          ...(budget ? { budget, unchecked: [...new Set(unchecked)] } : {}),
-          yield: {
-            ...totals,
-            costUsd: totals.usage.costUsd,
-            elapsedMs: performance.now() - started,
+        const currentBudget = budget();
+        const { envelope } = finishToolCall(
+          runtime,
+          ctx,
+          started,
+          {
+            ...input,
+            limitations: [...limitations, ...(input.limitations ?? [])],
+            ...(currentBudget
+              ? { budget: currentBudget, unchecked: [...new Set(unchecked)] }
+              : {}),
           },
-        });
+          {
+            ...totals,
+            costUsd: costObserved ? totals.usage.costUsd : undefined,
+          },
+        );
         if (input.refusal) diagnostic(failureCause, input.refusal);
         if (
           !input.refusal &&
           !diagnostics.length &&
-          !budget &&
+          !budget() &&
           !unchecked.length &&
           !primary?.source
         )
@@ -230,13 +236,16 @@ export function createFindFilesTool(dependencies: ToolDependencies) {
             "invalid_response",
             "entry decision was not received with established answer provenance",
           );
-        if (budget)
+        const settledBudget = budget();
+        if (settledBudget)
           diagnostic(
-            budget.kind === "max_calls" ? "call_budget" : "session_budget",
-            budget.message,
+            settledBudget.kind === "max_calls"
+              ? "call_budget"
+              : "session_budget",
+            settledBudget.message,
             [...new Set(unchecked)],
           );
-        if (unchecked.length && !budget)
+        if (unchecked.length && !budget())
           diagnostic(
             failureCause,
             "candidate ranking or entry work was not judged",
@@ -327,8 +336,6 @@ export function createFindFilesTool(dependencies: ToolDependencies) {
           ),
           missingWork: unchecked.length > 0,
         });
-        runtime.session.record(envelope);
-        runtime.guide.deliver(ctx);
         return {
           content: [
             {
@@ -487,25 +494,9 @@ export function createFindFilesTool(dependencies: ToolDependencies) {
         const result = await client.judge(state, questions, {
           signal,
           ...runtime.session.requestGate(),
-          beforeRequest: (count) => {
-            if (args.max_calls !== undefined && sent >= args.max_calls) {
-              budget = {
-                kind: "max_calls",
-                message: `max_calls=${args.max_calls} reached`,
-              };
-              return { ok: false, error: budget.message };
-            }
-            const admission = runtime.session.admit(count);
-            if (!admission.ok) {
-              budget = { kind: "session", message: admission.error };
-              return admission;
-            }
-            sent++;
-            return admission;
-          },
-          onUsage: (usage) => runtime.session.recordUsage(usage),
+          ...options,
           admissionCause: () =>
-            budget?.kind === "max_calls" ? "call_budget" : "session_budget",
+            budget()?.kind === "max_calls" ? "call_budget" : "session_budget",
         });
         for (const key of [
           "calls",
@@ -570,7 +561,7 @@ export function createFindFilesTool(dependencies: ToolDependencies) {
         })),
       );
       for (const { paths, result } of nameResults) {
-        if (!result.ok && !budget) return finish({ refusal: result.error });
+        if (!result.ok && !budget()) return finish({ refusal: result.error });
         for (const path of paths) {
           const answer = result.ok ? result.answers[path] : undefined;
           if (answer?.type === "bool") names.push({ path, p: answer.p });
@@ -603,7 +594,7 @@ export function createFindFilesTool(dependencies: ToolDependencies) {
           })),
         });
       };
-      if (budget) {
+      if (budget()) {
         unchecked.push(
           ...candidates.paths.filter(
             (path) => !names.some((item) => item.path === path),
@@ -678,7 +669,7 @@ export function createFindFilesTool(dependencies: ToolDependencies) {
         }),
       );
       for (const { paths, result } of contentResults) {
-        if (!result.ok && !budget) return finish({ refusal: result.error });
+        if (!result.ok && !budget()) return finish({ refusal: result.error });
         for (const path of paths) {
           const answer = result.ok ? result.answers[path] : undefined;
           if (answer?.type === "bool") content.push({ path, p: answer.p });
@@ -686,7 +677,7 @@ export function createFindFilesTool(dependencies: ToolDependencies) {
         }
       }
       if (content.length) bestRanking = rankFiles(content);
-      if (budget) {
+      if (budget()) {
         unchecked.push(
           ...readPaths.filter(
             (path) => !content.some((item) => item.path === path),
@@ -766,7 +757,7 @@ export function createFindFilesTool(dependencies: ToolDependencies) {
               noneLabel: "No candidate implements or documents the goal",
               candidates: paths.map((path) => ({
                 id: idByPath[path] ?? "",
-                label: `Candidate ${idByPath[path]}`,
+                label: `${idByPath[path] ?? ""} — ${path}`,
               })),
             }),
           },
@@ -774,7 +765,7 @@ export function createFindFilesTool(dependencies: ToolDependencies) {
       };
       const paths = retained.map((item) => item.path);
       const firstResult = await pointer(paths);
-      if (!firstResult.ok && !budget)
+      if (!firstResult.ok && !budget())
         return finish({ refusal: firstResult.error });
       const first = firstResult.ok ? firstResult.answers.entry : undefined;
       primary = first;
@@ -802,7 +793,7 @@ export function createFindFilesTool(dependencies: ToolDependencies) {
       ) {
         confirmationRequired = true;
         const secondResult = await pointer([...paths].reverse());
-        if (!secondResult.ok && !budget) {
+        if (!secondResult.ok && !budget()) {
           auxiliary.passages.notJudged--;
           auxiliary.controls.notJudged++;
           return finish({ refusal: secondResult.error });
@@ -868,7 +859,7 @@ export function createFindFilesTool(dependencies: ToolDependencies) {
       return output(
         top.path === "none" ? "none" : (pathById[top.path] ?? top.path),
         top.p,
-        short || budget ? "unsure" : band,
+        short || budget() ? "unsure" : band,
         band === "unsure" || short
           ? ranks.slice(1, 2).map((item) => ({
               path:

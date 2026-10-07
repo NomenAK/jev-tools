@@ -16,7 +16,7 @@ This is a solo-maintained project. Reports are reviewed on a best-effort basis; 
 
 Report repository-confinement escapes in file evidence collection, including reads outside the selected repository; unintended secret exposure caused by jev-tools; and unintended command execution or bypasses of disabled command execution.
 
-File evidence collection is confined to the repository, but optional commands are not sandboxed: they run with the host's permissions and may read or modify files or access the network. `JEV_TOOLS_ALLOW_COMMAND=0` disables this command path. Selected repository evidence and requested command output are sent to the configured API endpoint. Review the data and endpoint before use.
+File evidence collection is confined to the repository, but optional commands are not sandboxed: they run with the host's permissions and may read or modify files or access the network. `JEV_TOOLS_ALLOW_COMMAND=0` disables this command path. Selected repository evidence and requested command output are sent to the configured API endpoint; the configured API key value is redacted from every payload string before sending, but automatic secret redaction beyond the key value is not promised. Review the data and endpoint before use.
 
 ### Secret-named files are refused
 

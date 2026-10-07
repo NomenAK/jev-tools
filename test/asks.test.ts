@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { compileAsks, readAsks, reverseQuestions } from "../src/core/asks.ts";
+import {
+  compileAsks,
+  readAsks,
+  reverseQuestions,
+  sameSubjectQuestions,
+} from "../src/core/asks.ts";
 import type { Answer } from "../src/jev/types.ts";
 
 const verify = {
@@ -27,6 +32,12 @@ test("verify preserves the exact claim and groups issues, twin and exact bool", 
   assert.equal(
     result.questions.q3?.instructions,
     "Is the following statement true of the state: The file validates tokens",
+  );
+  // The same-subject control is compiled but kept out of the first round:
+  // it is judged only for contradicted verdicts.
+  assert.match(
+    result.questions.q4?.instructions ?? "",
+    /same subject.*same entity, file, version, run and moment/,
   );
   const a = result.questions.q1;
   const b = result.questions.q2;
@@ -132,10 +143,73 @@ test("decide has frozen hypotheses and indivisible coherence bools", () => {
   assert.equal(line?.value?.p, 0.6);
   assert.equal(line?.orderDependent, true);
 });
-test("files verify is a bool and locate is unavailable", () => {
+test("files verify ports the ask issues structure with twin and controls", () => {
   const result = plan(verify, "files");
-  assert.equal(result.questions.q1?.type, "bool");
-  assert.deepEqual(result.groups, [["q1"]]);
+  assert.deepEqual(result.groups, [["q1", "q2", "q3"]]);
+  const issues = result.questions.q1;
+  const twin = result.questions.q2;
+  assert.equal(issues?.type, "choice");
+  assert.equal(twin?.type, "choice");
+  if (issues?.type !== "choice" || twin?.type !== "choice") return;
+  assert.deepEqual(Object.keys(issues.criteria), [
+    "not_addressed",
+    "holds",
+    "contradicted",
+    "cannot_tell",
+  ]);
+  assert.deepEqual(Object.keys(twin.criteria), [
+    "not_addressed",
+    "contradicted",
+    "holds",
+    "cannot_tell",
+  ]);
+  assert.doesNotMatch(
+    issues.instructions,
+    /If a document, file, requirement or output/,
+  );
+  assert.equal(result.questions.q3?.type, "bool");
+  assert.equal(result.questions.q4?.type, "bool");
+  assert.match(
+    result.questions.q4?.instructions ?? "",
+    /content.*same subject/,
+  );
+  const [line] = readAsks(result, {
+    q1: choice({
+      holds: 0.9,
+      contradicted: 0.03,
+      not_addressed: 0.05,
+      cannot_tell: 0.02,
+    }),
+    q2: choice({
+      holds: 0.9,
+      contradicted: 0.03,
+      not_addressed: 0.05,
+      cannot_tell: 0.02,
+    }),
+    q3: { type: "bool", p: 0.9 } as Answer,
+    q4: { type: "bool", p: 0.9 } as Answer,
+  });
+  assert.deepEqual(line?.value, { head: "holds", p: 0.9 });
+  assert.equal(line?.band, "verdict");
+  assert.deepEqual(
+    reverseQuestions(result, {
+      q1: choice({
+        holds: 0.9,
+        contradicted: 0.03,
+        not_addressed: 0.05,
+        cannot_tell: 0.02,
+      }),
+      q2: choice({
+        holds: 0.9,
+        contradicted: 0.03,
+        not_addressed: 0.05,
+        cannot_tell: 0.02,
+      }),
+      q3: { type: "bool", p: 0.9 } as Answer,
+      q4: { type: "bool", p: 0.9 } as Answer,
+    }),
+    {},
+  );
   assert.equal(
     compileAsks(
       {
@@ -187,7 +261,7 @@ test("every verify claim remains visible when issues or twin are unjudged", () =
   });
   assert.deepEqual(result.groups, [
     ["q1", "q2", "q3"],
-    ["q4", "q5", "q6"],
+    ["q5", "q6", "q7"],
   ]);
   const lines = readAsks(result, {
     q1: choice({
@@ -198,14 +272,14 @@ test("every verify claim remains visible when issues or twin are unjudged", () =
     }),
     q2: { type: "unjudged", reason: "missing twin" },
     q3: { type: "bool", p: 0.98 },
-    q4: { type: "unjudged", reason: "missing issues" },
-    q5: choice({
+    q5: { type: "unjudged", reason: "missing issues" },
+    q6: choice({
       holds: 0.98,
       contradicted: 0.01,
       not_addressed: 0.01,
       cannot_tell: 0,
     }),
-    q6: { type: "bool", p: 0.98 },
+    q7: { type: "bool", p: 0.98 },
   });
   assert.equal(lines.length, 2);
   assert.ok(
@@ -239,4 +313,218 @@ test("classify explains that other is reserved and supplied automatically", () =
   assert.equal(result.ok, false);
   if (!result.ok)
     assert.match(result.error, /categories\.other is reserved.*automatically/);
+});
+test("contradicted verdicts demote on a low same-subject check, holds never does", () => {
+  const result = plan(verify);
+  const probs = (head: string): Record<string, number> => ({
+    holds: 0,
+    contradicted: 0,
+    not_addressed: 0.05,
+    cannot_tell: 0,
+    [head]: 0.95,
+  });
+  const contradicted = (same: number) => ({
+    q1: choice(probs("contradicted")),
+    q2: choice(probs("contradicted")),
+    q3: { type: "bool", p: 0.02 } as Answer,
+    q4: { type: "bool", p: same } as Answer,
+  });
+  const [low] = readAsks(result, contradicted(0.2));
+  assert.equal(low?.band, "unsure");
+  assert.match(low?.reason ?? "", /different subject/);
+  const [high] = readAsks(result, contradicted(0.9));
+  assert.equal(high?.band, "verdict");
+  assert.deepEqual(high?.value, { head: "contradicted", p: 0.95 });
+  // A missing or unjudged control demotes the contradiction as unproven.
+  const [missing] = readAsks(result, {
+    q1: choice(probs("contradicted")),
+    q2: choice(probs("contradicted")),
+    q3: { type: "bool", p: 0.02 } as Answer,
+  });
+  assert.equal(missing?.band, "unsure");
+  assert.match(missing?.reason ?? "", /same-subject control unjudged/);
+  const [failed] = readAsks(result, {
+    q1: choice(probs("contradicted")),
+    q2: choice(probs("contradicted")),
+    q3: { type: "bool", p: 0.02 } as Answer,
+    q4: { type: "unjudged", reason: "max_calls=1 reached" } as Answer,
+  });
+  assert.equal(failed?.band, "unsure");
+  assert.match(
+    failed?.reason ?? "",
+    /same-subject control unjudged: max_calls=1 reached/,
+  );
+  const [holds] = readAsks(result, {
+    q1: choice(probs("holds")),
+    q2: choice(probs("holds")),
+    q3: { type: "bool", p: 0.98 },
+  });
+  assert.equal(holds?.band, "verdict");
+  assert.deepEqual(holds?.value, { head: "holds", p: 0.95 });
+  const [holdsLowSame] = readAsks(result, {
+    q1: choice(probs("holds")),
+    q2: choice(probs("holds")),
+    q3: { type: "bool", p: 0.98 },
+    q4: { type: "bool", p: 0.1 },
+  });
+  assert.equal(holdsLowSame?.band, "verdict");
+  assert.deepEqual(holdsLowSame?.value, { head: "holds", p: 0.95 });
+});
+test("unsure scores split across non-adjacent levels name the split", () => {
+  const result = plan({
+    intent: "rate",
+    dimension: "risk",
+    levels: ["Isolated", "Shared", "Critical", "Catastrophic"],
+  });
+  const score = (probabilities: Record<string, number>): Answer => ({
+    type: "score",
+    score: 0,
+    confidence: 0.5,
+    legend: null,
+    probabilities,
+  });
+  const [split] = readAsks(result, {
+    q1: score({
+      Isolated: 0.45,
+      Shared: 0.05,
+      Critical: 0.05,
+      Catastrophic: 0.45,
+    }),
+  });
+  assert.match(
+    split?.reason ?? "",
+    /split between non-adjacent levels 0 and 3/,
+  );
+  const [adjacent] = readAsks(result, {
+    q1: score({
+      Isolated: 0.45,
+      Shared: 0.45,
+      Critical: 0.05,
+      Catastrophic: 0.05,
+    }),
+  });
+  assert.equal(adjacent?.reason, undefined);
+  const [clear] = readAsks(result, {
+    q1: score({
+      Isolated: 0.9,
+      Shared: 0.05,
+      Critical: 0,
+      Catastrophic: 0.05,
+    }),
+  });
+  assert.equal(clear?.reason, undefined);
+});
+test("order-invariant choices schedule no reverse re-ask", () => {
+  const single = plan({
+    intent: "classify",
+    categories: { lone: "The only behavior" },
+  });
+  const low = {
+    q1: choice({ lone: 0.6, other: 0.3, cannot_tell: 0.1 }),
+  };
+  assert.deepEqual(reverseQuestions(single, low), {});
+  const two = plan({
+    intent: "classify",
+    categories: { a: "First behavior", b: "Second behavior" },
+  });
+  const uncertain = {
+    q1: choice({ a: 0.6, b: 0.3, other: 0.05, cannot_tell: 0.05 }),
+  };
+  const reverse = reverseQuestions(two, uncertain);
+  assert.equal(Object.keys(reverse).length, 1);
+  const question = reverse.q1;
+  assert.equal(question?.type, "choice");
+  if (question?.type !== "choice") return;
+  assert.deepEqual(Object.keys(question.criteria), [
+    "b",
+    "a",
+    "other",
+    "cannot_tell",
+  ]);
+  const decided = plan({
+    intent: "decide",
+    hypotheses: { lone: "The only hypothesis" },
+  });
+  assert.deepEqual(
+    reverseQuestions(decided, {
+      q1: choice({ lone: 0.6, other: 0.3, cannot_tell: 0.1 }),
+      q2: { type: "bool", p: 0.6 } as Answer,
+    }),
+    {},
+  );
+});
+test("same-subject round fires only for contradicted verdicts", () => {
+  const result = plan(verify);
+  const issues = (head: string, peak: number): Record<string, Answer> => {
+    const rest = (1 - peak) / 3;
+    return {
+      q1: choice({
+        holds: head === "holds" ? peak : rest,
+        contradicted: head === "contradicted" ? peak : rest,
+        not_addressed: head === "not_addressed" ? peak : rest,
+        cannot_tell: rest,
+      }),
+      q2: choice({
+        holds: head === "holds" ? peak : rest,
+        contradicted: head === "contradicted" ? peak : rest,
+        not_addressed: head === "not_addressed" ? peak : rest,
+        cannot_tell: rest,
+      }),
+      q3: { type: "bool", p: head === "holds" ? 0.9 : 0.02 },
+    };
+  };
+  const contradicted = sameSubjectQuestions(
+    result,
+    issues("contradicted", 0.9),
+  );
+  assert.deepEqual(Object.keys(contradicted), ["q4"]);
+  assert.equal(contradicted.q4?.type, "bool");
+  assert.deepEqual(sameSubjectQuestions(result, issues("holds", 0.9)), {});
+  assert.deepEqual(
+    sameSubjectQuestions(result, issues("not_addressed", 0.9)),
+    {},
+  );
+  // Below the verdict band there is no verdict to defend.
+  assert.deepEqual(
+    sameSubjectQuestions(result, issues("contradicted", 0.5)),
+    {},
+  );
+  // An exact-statement disagreement already demotes: no round fires.
+  assert.deepEqual(
+    sameSubjectQuestions(result, {
+      q1: choice({
+        holds: 0.02,
+        contradicted: 0.9,
+        not_addressed: 0.04,
+        cannot_tell: 0.04,
+      }),
+      q2: choice({
+        holds: 0.02,
+        contradicted: 0.9,
+        not_addressed: 0.04,
+        cannot_tell: 0.04,
+      }),
+      q3: { type: "bool", p: 0.9 },
+    }),
+    {},
+  );
+});
+test("unjudged exact control leaves no verdict even with a clear head", () => {
+  const result = plan(verify);
+  const [line] = readAsks(result, {
+    q1: choice({
+      holds: 0.95,
+      contradicted: 0.02,
+      not_addressed: 0.02,
+      cannot_tell: 0.01,
+    }),
+    q2: choice({
+      holds: 0.95,
+      contradicted: 0.02,
+      not_addressed: 0.02,
+      cannot_tell: 0.01,
+    }),
+    q3: { type: "unjudged", reason: "budget refused" } as Answer,
+  });
+  assert.equal(line?.unjudged, true);
 });

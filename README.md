@@ -6,6 +6,8 @@ Six evidence-oriented tools for pi, omp and any MCP client, compatible with the 
 
 [Watch the launch video](docs/media/jev-agent-tools-launch.mp4) (74 s, MP4).
 
+New here? Start with the [getting-started guide](docs/guide/getting-started.md); the [documentation index](docs/README.md) maps every audience to its docs.
+
 ## Install
 
 Install through your host's package manager, or register the MCP server with an MCP client. The npm package is `jev-agent-tools`. pi and omp load its TypeScript sources directly; the MCP server ships prebuilt.
@@ -13,15 +15,15 @@ Install through your host's package manager, or register the MCP server with an 
 ### pi
 
 ```sh
-pi install npm:jev-agent-tools@0.3.0
+pi install npm:jev-agent-tools@0.4.0
 # Project-local installation:
-pi install -l npm:jev-agent-tools@0.3.0
+pi install -l npm:jev-agent-tools@0.4.0
 ```
 
 ### omp
 
 ```sh
-omp plugin install jev-agent-tools@0.3.0
+omp plugin install jev-agent-tools@0.4.0
 ```
 
 ### Any MCP client
@@ -151,13 +153,13 @@ MCP clients receive the guide as server `instructions`, which some clients ignor
 
 ## Data and command safety
 
-Repository evidence, notes and optional command output are sent to your configured endpoint. Review its data-handling policy before using confidential repositories. See [security guidance](SECURITY.md).
+Repository evidence, notes and optional command output are sent to your configured endpoint. Review its data-handling policy before using confidential repositories. The configured API key value is redacted from every payload string before sending, and commands run without `JEV_TOOLS_API_KEY`. See [security guidance](SECURITY.md).
 
 File collection is confined to the repository: absolute paths, parent traversal, escaping symlinks, Git metadata and internal URLs are not file inputs. Files named like secrets (`.env`, `.env.*` except `.env.example`/`.env.sample`/`.env.template`, `*.pem`, `id_rsa*`, `*.p12`, `credentials*`, `secrets*`, any depth, any case) are refused before reading and named with cause `secret_pattern`. Build output, binaries, lockfiles and oversized files are skipped or refused with visible limits; evidence is not silently truncated into a verdict. This confinement does **not** sandbox a command. `jev_ask` commands can read, write or access the network with the host's shell permissions; they run without `JEV_TOOLS_API_KEY`, and the configured key is replaced with `[redacted]` in their output. omp uses execution approval for commands; pi does not supply an additional per-tool command approval; MCP clients apply their own tool approval, and the server marks `jev_ask` as not read-only. Set `JEV_TOOLS_ALLOW_COMMAND=0` to disable them.
 
 ## Automatic documentation check
 
-On a dirty tree, the extension can check existing Markdown documentation once at run end against changes from `HEAD`, including admitted untracked files (not gitignored, not secret-named), which are sent to the endpoint without an explicit tool call. A flagged existing sentence can request one additional turn to inspect and update it or explain with evidence why it remains correct; a flag does not itself establish falsehood or require a second call. Merely unsure sections do not trigger another turn. `JEV_TOOLS_AUTO_DOCS=0`, missing configuration, invalid/exhausted session budgets or a clean tree skip the check. Errors and timeout do not block the host. This opt-out host feature does not certify documentation completeness. MCP has no hook and requires no manual replacement ritual.
+On a dirty tree, the extension can check existing Markdown documentation once at run end against changes from `HEAD`, including admitted untracked files (not gitignored, not secret-named), which are sent to the endpoint without an explicit tool call, using at most 8 Jev calls. A flagged existing sentence can request one additional turn to inspect and update it or explain with evidence why it remains correct; a flag does not itself establish falsehood or require a second call. Merely unsure sections do not trigger another turn. `JEV_TOOLS_AUTO_DOCS=0`, missing configuration, invalid/exhausted session budgets or a clean tree skip the check. Errors and timeout do not block the host. This opt-out host feature does not certify documentation completeness. MCP has no hook and requires no manual replacement ritual.
 
 ## Known limits
 
@@ -165,7 +167,7 @@ Static evidence and probability do not prove execution, safety or completeness. 
 
 ## Development and contributions
 
-See [CONTRIBUTING.md](CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md), [design](docs/design.md) and [architecture decisions](docs/adr/). Development checks run locally without contacting a judgment endpoint:
+See [CONTRIBUTING.md](CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md), [design](docs/design.md) and [architecture decisions](docs/adr/). Start with the [documentation index](docs/README.md); contributors add [architecture](docs/architecture.md) and [how the tools work](docs/internals/). Development checks run locally without contacting a judgment endpoint:
 
 ```sh
 npm ci --include=optional

@@ -22,7 +22,6 @@ import {
 import { collectDocsCandidates } from "../core/docs.ts";
 import {
   type AnswerInput,
-  type BudgetRefusal,
   buildEnvelope,
   type Envelope,
   type Limitation,
@@ -40,6 +39,7 @@ import {
 } from "../presets/docs.ts";
 import type { ToolDependencies } from "../runtime.ts";
 import { NOT_CONFIGURED } from "../texts/configuration.ts";
+import { createJudgeOptions } from "./judge-options.ts";
 import { ReviewReport, reportMetrics } from "./review-report.ts";
 
 export interface DocsCheckInput {
@@ -102,12 +102,19 @@ export async function runDocsCheck(
   let collection: DocsCheckResult["collection"];
   const limitations: Limitation[] = [
     {
-      fact: "Measured D22 limit: 2/45 documentation obligations found across 180 partial got/zod commits.",
+      fact: "Docs check flags existing sentences the change may have made false; it does not detect missing documentation.",
       next: "Also review missing documentation: this check evaluates existing sentences, not documentation completeness.",
     },
   ];
-  let budget: BudgetRefusal | undefined;
-  let sent = 0;
+  const {
+    options: sharedOptions,
+    budget,
+    gate,
+  } = createJudgeOptions({
+    signal,
+    maxCalls: input.maxCalls,
+    session: deps.runtime.session,
+  });
   let emptyBase: string | undefined;
   const finish = (
     refusal?: string,
@@ -178,10 +185,10 @@ export async function runDocsCheck(
           }
         : {}),
       unchecked: unjudged ? [] : unchecked,
-      budget,
+      budget: budget(),
       refusal,
       ...(!refusal &&
-      !budget &&
+      !budget() &&
       !collection &&
       !unchecked.length &&
       !findings.length &&
@@ -466,9 +473,12 @@ export async function runDocsCheck(
           );
           return;
         }
-        if (budget?.kind === "session") {
-          unchecked.push(`${label} (${budget.message})`);
-          report.diagnose("session_budget", budget.message, label, [reportId]);
+        const settledBudget = budget();
+        if (settledBudget?.kind === "session") {
+          unchecked.push(`${label} (${settledBudget.message})`);
+          report.diagnose("session_budget", settledBudget.message, label, [
+            reportId,
+          ]);
           return;
         }
         const prepared = prepareDocsCheck(candidate);
@@ -497,31 +507,21 @@ export async function runDocsCheck(
           return;
         }
         const judgment = await client.judge(state, prepared.questions, {
-          signal,
+          ...sharedOptions,
           groups: [["status", "sentence"]],
           ...deps.runtime.session.requestGate(),
           admissionCause: () =>
-            budget?.kind === "session" ? "session_budget" : "call_budget",
+            budget()?.kind === "session" ? "session_budget" : "call_budget",
           beforeRequest(questionCount) {
-            if (budget?.kind === "session")
-              return { ok: false, error: budget.message };
+            const settled = budget();
+            if (settled?.kind === "session")
+              return { ok: false, error: settled.message };
             if (signal?.aborted)
               return {
                 ok: false,
                 error: "Budget exceeded or call canceled.",
               };
-            if (input.maxCalls !== undefined && sent >= input.maxCalls) {
-              budget = {
-                kind: "max_calls",
-                message: `max_calls=${input.maxCalls} reached`,
-              };
-              return { ok: false, error: budget.message };
-            }
-            const admitted = deps.runtime.session.admit(questionCount);
-            if (!admitted.ok)
-              budget = { kind: "session", message: admitted.error };
-            else sent++;
-            return admitted;
+            return gate(questionCount);
           },
           onUsage: (usage) => deps.runtime.session.recordUsage(usage),
         });

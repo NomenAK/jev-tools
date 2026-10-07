@@ -116,7 +116,7 @@ test("verdict uses file evidence and probability, not confidence", async () => {
   assert.ok(item);
   if (item.treatment === "judged") assert.equal(item.judgment.band, "verdict");
 });
-test("gray ranks top two after reverse, not adjacent sections", async () => {
+test("unsure ranks top two after reverse, not adjacent sections", async () => {
   const p = { S1: 0.55, S5: 0.4, none: 0.05 };
   const result = await run(source, [p, p]);
   const item = result.report.items[0];
@@ -127,25 +127,11 @@ test("gray ranks top two after reverse, not adjacent sections", async () => {
   assert.equal(result.orders[1]?.at(-1), "none");
   assert.equal(result.orders[1]?.[0], "S6");
 });
-test("shrinking re-ask retains unsure even when final choice becomes clear", async () => {
+test("a weak pointer stays unsure without a shrinking re-ask", async () => {
   const p = { S1: 0.3, S5: 0.28, S3: 0.22, S2: 0.1, none: 0.1 };
-  const result = await run(source, [
-    p,
-    p,
-    { S5: 0.92, S1: 0.03, S3: 0.03, none: 0.02 },
-  ]);
-  assert.equal((result.states[2]?.sections as unknown[])?.length, 3);
-  const item = result.report.items[0];
-  assert.ok(item);
-  assert.equal(item.treatment, "judged");
-  if (item.treatment === "judged") {
-    assert.equal(item.judgment.band, "unsure");
-    assert.deepEqual(item.judgment.measure.value, {
-      status: "known",
-      value: 0.92,
-    });
-  }
-  assert.equal(result.states.length, 3);
+  const result = await run(source, [p, p]);
+  assert.equal(result.states.length, 2);
+  assert.match(result.text, /unsure.*large.md:1-11/);
 });
 test("large source uses a bounded plan then refines only the selected evidence", async () => {
   const large = Array.from(
@@ -193,20 +179,19 @@ test("verdict threshold is inclusive after averaging both orders", async () => {
   assert.ok(item);
   if (item.treatment === "judged") assert.equal(item.judgment.band, "verdict");
 });
-test("none after shrinking remains unsure with search elsewhere", async () => {
-  const p = { S1: 0.3, S2: 0.25, S3: 0.24, none: 0.21 };
-  const result = await run(source, [
-    p,
-    p,
-    { none: 0.9, S1: 0.05, S2: 0.03, S3: 0.02 },
-  ]);
-  const item = result.report.items[0];
-  assert.ok(item);
-  assert.equal(item.treatment, "judged");
-  if (item.treatment === "judged") {
-    assert.equal(item.judgment.band, "unsure");
-    assert.equal(item.judgment.result, "no section fits");
-  }
+test("a weak none pointer stays unsure with search elsewhere", async () => {
+  const p = { none: 0.45, S1: 0.3, S2: 0.15, S3: 0.1 };
+  const result = await run(source, [p, p]);
+  assert.equal(result.states.length, 2);
+  assert.match(result.text, /unsure.*none/);
+  assert.ok(
+    result.report.actions.some(
+      (action) =>
+        action.code === "inspect_native" &&
+        action.target.status === "known" &&
+        action.target.value === "large.md",
+    ),
+  );
 });
 test("an unsure plan cannot promote a confident refinement", async () => {
   const large = Array.from(
@@ -226,7 +211,7 @@ test("an unsure plan cannot promote a confident refinement", async () => {
     /plan unsure: refined only the top block; also consider large.md:1-156/,
   );
 });
-test("a gray none plan retains the readable alternative block", async () => {
+test("an unsure none plan retains the readable alternative block", async () => {
   const large = Array.from(
     { length: 40 },
     (_, i) => `# Part ${i + 1}\n${Array(12).fill("x".repeat(500)).join("\n")}`,

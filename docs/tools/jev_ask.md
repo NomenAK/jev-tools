@@ -39,7 +39,7 @@ All intents may add `about: string` naming the relevant evidence, such as `state
 
 | Intent | Fields | Meaning |
 |---|---|---|
-| `verify` | `claims: {id: statement}` | Verify one positive self-contained factual statement per claim, preserving its exact text. |
+| `verify` | `claims: {id: statement}` | Verify one positive self-contained factual statement per claim, preserving its exact text; answers distinguish `holds` / `contradicted` / `not addressed` / `cannot tell` with an order-reversed twin and an exact-statement check, plus a same-subject check asked in a second round only for `contradicted` verdicts. |
 | `classify` | `categories: {name: description}`, optional `pick: "one"` (default) or `"many"`, optional `by: string` | Pick a category or independently judge each; `by` describes the dimension. |
 | `decide` | `hypotheses: {name: statement}` | Choose among mutually exclusive rivals, including fallback outcomes. |
 | `rate` | `dimension: string`, `levels: string[]` | Choose among 2–10 concrete ordered situations on one dimension. |
@@ -78,7 +78,7 @@ Illustrative call with fictional repository paths, not a recorded execution:
 
 ## Results and next action
 
-Verification distinguishes `holds`, `contradicted`, `not addressed by the state` and `cannot tell`. An exact-statement boolean cross-check cannot override evidence issues or prove contradiction alone; scope/evidence disagreement produces unsure with raw values. Choices under 0.85 or failed controls produce unsure; missing evidence produces abstain and names the needed piece. Read surprising files or output directly. Add the decisive evidence rather than rewording. See [shared result reading](../../README.md#read-the-results).
+Verification distinguishes `holds`, `contradicted`, `not addressed by the state` and `cannot tell`. An exact-statement boolean cross-check cannot override evidence issues or prove contradiction alone; scope/evidence disagreement produces unsure with raw values. A `contradicted` verdict is demoted to unsure when the refuting evidence may concern another subject (same entity, file, version, run or moment); the reason starts `evidence may concern a different subject`. Choices under 0.85 or failed controls produce unsure; missing evidence produces abstain and names the needed piece. An unsure `score` split across non-adjacent levels names the split (`split between non-adjacent levels i and j`) instead of trusting the average. Read surprising files or output directly. Add the decisive evidence rather than rewording. See [shared result reading](../../README.md#read-the-results).
 
 ## Limits and failure behavior
 

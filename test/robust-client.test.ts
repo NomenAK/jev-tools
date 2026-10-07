@@ -88,7 +88,10 @@ test("long Retry-After returns unjudged immediately without retrying", async () 
   assert.equal(result.calls, 1);
   assert.equal(result.ok, false);
   if (!result.ok)
-    assert.match(result.error, /Jev HTTP 429, retry after 3600 s/);
+    assert.match(
+      result.error,
+      /Jev HTTP 429: server asked to retry after 3600 s; not waited \(limit 5 s\)/,
+    );
   assert.deepEqual(e.waits, [10_000]);
 });
 test("proxy HTML errors stay short and redact credentials before truncation", async () => {
@@ -348,16 +351,42 @@ test("planned batches start concurrently without waiting for the first response"
     await barrier.promise;
     return success(body);
   });
+  // Each question fits one per-evaluation budget, but the three together
+  // exceed one request budget, so planning yields two batches.
   const result = await e.client.judge(
     {},
     {
-      a: { ...q, instructions: "x".repeat(120_000) },
-      b: { ...q, instructions: "y".repeat(120_000) },
+      a: { ...q, instructions: "x".repeat(80_000) },
+      b: { ...q, instructions: "y".repeat(80_000) },
+      c: { ...q, instructions: "z".repeat(80_000) },
     },
   );
   assert.equal(result.calls, 2);
   assert.equal(result.ok, true);
   assert.equal(starts.length, 2);
+  if (result.ok)
+    for (const answer of Object.values(result.answers))
+      assert.equal(answer.type, "bool");
+});
+
+test("a per-evaluation over-budget witness is never transported and stays an unavailable control", async () => {
+  const e = harness(success);
+  const result = await e.client.judge(
+    { proof: "same" },
+    {
+      q1: q,
+      w: { ...q, instructions: "x".repeat(100_000) },
+    },
+    { groups: [["q1"]], witnesses: ["w"] },
+  );
+  assert.equal(result.ok, true);
+  for (const request of e.requests)
+    assert.equal("w" in request.questions, false);
+  if (!result.ok) return;
+  assert.equal(result.answers.q1?.type, "bool");
+  assert.equal(result.answers.w?.type, "unjudged");
+  if (result.answers.w?.type === "unjudged")
+    assert.match(result.answers.w.reason, /per-evaluation budget/);
 });
 
 test("monotone question-size refusal probes once and preserves accepted siblings", async () => {
@@ -466,47 +495,59 @@ test("client subdivision properties hold for constructed pseudo-random threshold
     }
   }
 });
-test("heuristic packing never prevents oversized single-group transport", async () => {
+test("heuristic packing sends fittable groups while per-evaluation overflow is refused locally", async () => {
   const e = harness(success);
   const questions: Record<string, Question> = {};
   for (let i = 0; i < 10; i++)
     questions[`q${i}`] = { ...q, instructions: "x".repeat(50_000) };
   await e.client.judge({}, questions);
   assert.ok(e.requests.length > 1);
+  // A state no single evaluation can carry is refused before any request.
+  const sent = e.requests.length;
   const result = await e.client.judge({ text: "x".repeat(300_000) }, { q });
   assert.equal(result.ok, true);
-  assert.equal(e.requests.at(-1)?.state.text, "x".repeat(300_000));
+  assert.equal(e.requests.length, sent);
+  assert.equal(result.answers.q?.type, "unjudged");
+  if (result.answers.q?.type === "unjudged")
+    assert.match(result.answers.q.reason, /per-evaluation budget/);
 });
 test("fresh pools enforce shared concurrency and exact rolling-window wait", async () => {
   let now = 0;
   const waits: number[] = [];
-  const pool = createPool({
-    now: () => now,
-    sleep: async (ms) => {
-      waits.push(ms);
-      now += ms;
+  const limits = { ratePerSecond: 8, concurrency: 8 };
+  const pool = createPool(
+    {
+      now: () => now,
+      sleep: async (ms) => {
+        waits.push(ms);
+        now += ms;
+      },
     },
-  });
+    limits,
+  );
   const releases = await Promise.all(
-    Array.from({ length: 8 }, () => pool.acquire()),
+    Array.from({ length: limits.concurrency }, () => pool.acquire()),
   );
   let acquired = false;
-  const ninth = pool.acquire().then((release) => {
+  const next = pool.acquire().then((release) => {
     acquired = true;
     return release;
   });
   await Promise.resolve();
   assert.equal(acquired, false);
   releases[0]?.();
-  const release = await ninth;
+  const release = await next;
   assert.deepEqual(waits, [1_000]);
   release();
   for (const free of releases) free();
-  const fresh = createPool({
-    now: () => 0,
-    sleep: async () => {
-      throw Error("unexpected wait");
+  const fresh = createPool(
+    {
+      now: () => 0,
+      sleep: async () => {
+        throw Error("unexpected wait");
+      },
     },
-  });
+    limits,
+  );
   (await fresh.acquire())();
 });

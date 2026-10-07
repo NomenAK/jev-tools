@@ -247,7 +247,7 @@ export async function collectRiskCallers(
                 if (!location.ok) return undefined;
                 return (await lstat(location.abs)).isFile() ? path : undefined;
               } catch (error) {
-                if ((error as NodeJS.ErrnoException).code === "ENOENT")
+                if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT")
                   return undefined;
                 throw error;
               }
@@ -391,7 +391,7 @@ export async function collectRiskCallers(
           ? { text: decoded.text }
           : { text: null, limitation: `${path}: ${decoded.error}` };
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === "ENOENT")
+        if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT")
           return { text: null };
         return { text: null, limitation: "after unreadable" };
       } finally {

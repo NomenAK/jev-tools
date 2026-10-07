@@ -383,3 +383,95 @@ test("docs with only a binary change keeps the limit and reports nothing judged"
     await rm(cwd, { recursive: true, force: true });
   }
 });
+test("sentence pointer past the option cap stays unjudged and names the section", async () => {
+  for (const count of [254, 255]) {
+    const cwd = await mkdtemp(join(tmpdir(), "docs-pointer-"));
+    let requests = 0;
+    const client: JevClient = {
+      clearCache() {},
+      async judge(_state, _questions, options) {
+        options?.beforeRequest?.(2);
+        requests++;
+        return {
+          ok: true,
+          calls: 1,
+          questions: 2,
+          answers: {
+            status: {
+              type: "choice",
+              choice: "now_false",
+              confidence: 1,
+              probabilities: { unrelated: 0, still_true: 0, now_false: 1 },
+            },
+            sentence: {
+              type: "choice",
+              choice: "s1",
+              confidence: 1,
+              probabilities: { s1: 1, none: 0 },
+            },
+          },
+        };
+      },
+    };
+    try {
+      await exec("git", ["init", "-q"], { cwd, timeout: 10000 });
+      await writeFile(
+        join(cwd, "a.ts"),
+        "export function value() { return 1; }\n",
+      );
+      const sentences = Array.from(
+        { length: count },
+        (_, index) => `Case ${index} shows \`value\` returns one.`,
+      ).join(" ");
+      await writeFile(join(cwd, "README.md"), `# Cases\n${sentences}`);
+      await exec("git", ["add", "."], { cwd, timeout: 10000 });
+      await exec(
+        "git",
+        [
+          "-c",
+          "user.name=Proof",
+          "-c",
+          "user.email=proof@example.invalid",
+          "commit",
+          "-qm",
+          "base",
+        ],
+        { cwd, timeout: 10000 },
+      );
+      await writeFile(
+        join(cwd, "a.ts"),
+        "export function value() { return 2; }\n",
+      );
+      const host = detectHost({});
+      const result = await runDocsCheck(
+        {
+          client,
+          exec,
+          host,
+          runtime: { session: new Session({}), guide: new Guide(host) },
+        },
+        { cwd },
+      );
+      if (count === 254) {
+        assert.equal(requests, 1);
+        assert.equal(result.findings.length, 1);
+      } else {
+        assert.equal(requests, 0);
+        assert.equal(result.findings.length, 0);
+        const unchecked = result.envelope.lines.flatMap((line) =>
+          line.type === "unchecked" ? line.items : [],
+        );
+        assert.ok(
+          unchecked.some(
+            (item) =>
+              item.includes("README.md § Cases") &&
+              item.includes("state or pointer too large"),
+          ),
+          `cap overflow names the section: ${unchecked.join("; ")}`,
+        );
+      }
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  }
+});

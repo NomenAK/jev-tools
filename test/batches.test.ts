@@ -85,3 +85,60 @@ test("constructed group partitions preserve every ordinary question exactly once
       );
   }
 });
+test("per-evaluation overflow is refused locally with a reason", () => {
+  const small: Question = { type: "bool", instructions: "Fits?" };
+  const huge: Question = {
+    type: "bool",
+    instructions: "x".repeat(100_000),
+  };
+  const result = prepareBatches(
+    { text: "state" },
+    { ok: small, big: huge },
+    { groups: [["ok", "big"]] },
+  );
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(
+    result.batches.flat(2),
+    ["ok"],
+    "the fittable sibling still batches",
+  );
+  assert.equal(result.unjudged.length, 1);
+  assert.equal(result.unjudged[0]?.id, "big");
+  assert.match(result.unjudged[0]?.reason ?? "", /per-evaluation budget/);
+});
+test("an over-budget witness or control never certifies its group", () => {
+  const control: Question = { type: "bool", instructions: "Control?" };
+  const huge: Question = {
+    type: "bool",
+    instructions: "x".repeat(100_000),
+  };
+  const witnessed = prepareBatches(
+    { text: "state" },
+    { q1: control, w: huge },
+    { groups: [["q1"]], witnesses: ["w"] },
+  );
+  assert.equal(witnessed.ok, true);
+  if (!witnessed.ok) return;
+  // The witness is named unjudged; readers treat a missing witness as an
+  // unavailable control and demote, never certify.
+  assert.deepEqual(
+    witnessed.unjudged.map((entry) => entry.id),
+    ["w"],
+  );
+  assert.deepEqual(witnessed.batches.flat(2), ["q1"]);
+  const grouped = prepareBatches(
+    { text: "state" },
+    { q1: control, exact: huge },
+    { groups: [["q1", "exact"]] },
+  );
+  assert.equal(grouped.ok, true);
+  if (!grouped.ok) return;
+  // Partial filtering keeps the judged member; the members check in readAsks
+  // turns the group unsure on the unjudged control.
+  assert.deepEqual(grouped.batches.flat(2), ["q1"]);
+  assert.deepEqual(
+    grouped.unjudged.map((entry) => entry.id),
+    ["exact"],
+  );
+});

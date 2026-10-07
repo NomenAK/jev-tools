@@ -8,7 +8,7 @@ import {
 } from "../adapters/evidence-context.ts";
 import { collectUnits } from "../adapters/git.ts";
 import { resolveBase } from "../adapters/git-base.ts";
-import { shareGitInventory } from "../adapters/git-inventory.ts";
+import { shareGitInventory, shareGitTree } from "../adapters/git-inventory.ts";
 import { collectRiskCallers } from "../adapters/risk-callers.ts";
 import { hostUsage } from "../adapters/usage.ts";
 import {
@@ -23,7 +23,6 @@ import { prepareBatches } from "../core/batches.ts";
 import { isTestFile } from "../core/diff.ts";
 import {
   type AnswerInput,
-  type BudgetRefusal,
   buildEnvelope,
   type Envelope,
   type Limitation,
@@ -46,7 +45,7 @@ import {
   type BuiltinRiskDimension,
   evaluateWitnessHealth,
   prepareRiskMatrix,
-  prepareRiskSeverity,
+  prepareSeverityBatch,
 } from "../presets/risk.ts";
 import { renderResultReport } from "../render.ts";
 import type { ToolDependencies } from "../runtime.ts";
@@ -54,6 +53,7 @@ import { CHECK_DIFF_DESCRIPTION } from "../texts/check-diff.ts";
 import { NOT_CONFIGURED } from "../texts/configuration.ts";
 import { CHECK_DIFF_GUIDELINE } from "../texts/instructions.ts";
 import { runDocsCheck } from "./docs-check.ts";
+import { createJudgeOptions } from "./judge-options.ts";
 import { controlsFor, ReviewReport, reportMetrics } from "./review-report.ts";
 import { runSpecCheck } from "./spec-check.ts";
 
@@ -93,6 +93,8 @@ export interface RiskDetails {
 }
 function unitLabel(unit: EvidenceUnit): string {
   const range = unit.afterRange ?? unit.beforeRange;
+  // Display width only, not a policy or an identity: the first 8 hex chars
+  // just make the label short while still distinguishing changed units by eye.
   const fingerprint = createHash("sha256")
     .update(JSON.stringify([unit.file, unit.name, unit.before, unit.after]))
     .digest("hex")
@@ -129,7 +131,9 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
       const evidenceContext = evidence.context;
       const report = new ReviewReport();
       const cwd = evidence.ok ? evidence.cwd : evidenceContext.authority.path;
-      const exec = shareGitInventory(execute);
+      // collectUnits and collectRiskCallers both ask git for the repository
+      // root and the base tree over the same cwd and ref.
+      const exec = shareGitTree(shareGitInventory(execute));
       if (!evidence.ok) {
         const envelope = buildEnvelope({
           refusal: evidence.error,
@@ -216,8 +220,16 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
       const unitOrder = new Map<AnswerInput, string>();
       const limitations: Limitation[] = [];
       const unchecked: string[] = [];
-      let budget: BudgetRefusal | undefined;
-      let sent = 0;
+      const {
+        options: judgeOptions,
+        budget,
+        gateWith,
+        spent,
+      } = createJudgeOptions({
+        signal,
+        maxCalls: args.max_calls,
+        session: runtime.session,
+      });
       let matrixHealthy = true;
       let emptyBase: string | undefined;
       const finish = (refusal?: string, cause?: Cause) => {
@@ -258,7 +270,7 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
                 ]
               : uniqueLimitations,
           unchecked: [...new Set(unchecked)],
-          budget,
+          budget: budget(),
           ...(refusal ? { refusal } : {}),
           ...(noFindings && emptyBase === undefined
             ? {
@@ -436,32 +448,13 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
       if (!batches.ok) return finish(batches.error, "group_too_large");
       let reservedMatrixCalls = batches.batches.length;
       const optionsFor = (matrixRequest = false): JudgmentOptions => ({
-        signal,
-        ...runtime.session.requestGate(),
-        admissionCause: () =>
-          budget?.kind === "session" ? "session_budget" : "call_budget",
+        ...judgeOptions,
         beforeRequest(questionCount) {
           if (matrixRequest && reservedMatrixCalls > 0) reservedMatrixCalls--;
-          const limit =
-            args.max_calls === undefined
-              ? undefined
-              : args.max_calls - (matrixRequest ? 0 : reservedMatrixCalls);
-          if (limit !== undefined && sent >= limit) {
-            budget = {
-              kind: "max_calls",
-              message: `max_calls=${args.max_calls} reached`,
-            };
-            return { ok: false, error: budget.message };
-          }
-          const admitted = runtime.session.admit(questionCount);
-          if (!admitted.ok) {
-            budget = { kind: "session", message: admitted.error };
-            return admitted;
-          }
-          sent++;
-          return admitted;
+          return gateWith(matrixRequest ? 0 : reservedMatrixCalls)(
+            questionCount,
+          );
         },
-        onUsage: (usage) => runtime.session.recordUsage(usage),
       });
       const judge = async (
         state: State,
@@ -537,7 +530,7 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
       const localPromises = local.proofs.map(async (proof) => {
         if (
           args.max_calls !== undefined &&
-          sent + reservedMatrixCalls >= args.max_calls
+          spent() + reservedMatrixCalls >= args.max_calls
         )
           await matrixPromise;
         return {
@@ -571,11 +564,11 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
       for (const cell of prepared.cells) {
         const rawAnswer = result.ok ? result.answers[cell.id] : undefined;
         const answer =
-          rawAnswer?.type === "unjudged" && !rawAnswer.cause && budget
+          rawAnswer?.type === "unjudged" && !rawAnswer.cause && budget()
             ? {
                 ...rawAnswer,
                 cause:
-                  budget.kind === "session"
+                  budget()?.kind === "session"
                     ? ("session_budget" as const)
                     : ("call_budget" as const),
               }
@@ -585,8 +578,8 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
           report.failure(
             result,
             [`risk:${cell.id}`],
-            budget
-              ? budget.kind === "session"
+            budget()
+              ? budget()?.kind === "session"
                 ? "session_budget"
                 : "call_budget"
               : undefined,
@@ -674,8 +667,8 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
           report.failure(
             localResult,
             [reportId],
-            budget
-              ? budget.kind === "session"
+            budget()
+              ? budget()?.kind === "session"
                 ? "session_budget"
                 : "call_budget"
               : undefined,
@@ -772,39 +765,56 @@ export function createCheckDiffTool(dependencies: ToolDependencies) {
             });
         }
       }
+      // One severity request per unit: every dimension of that unit shares its
+      // state, so several score questions ride a single request under
+      // REQUEST_MAX_TOKENS instead of one request each.
+      const byUnit = new Map<string, typeof severity>();
+      for (const item of severity) {
+        const key = `${item.unit.id}:${item.evidence ? "caller" : "unit"}`;
+        const group = byUnit.get(key) ?? [];
+        group.push(item);
+        byUnit.set(key, group);
+      }
       await Promise.all(
-        severity.map(async (item) => {
-          const request = prepareRiskSeverity(
-            item.unit,
-            item.dimension,
-            item.evidence?.callerEvidence,
+        [...byUnit.values()].map(async (group) => {
+          const request = prepareSeverityBatch(
+            group.map((item) => ({
+              unit: item.unit,
+              dimension: item.dimension,
+              ...(item.evidence?.callerEvidence !== undefined
+                ? { callerEvidence: item.evidence.callerEvidence }
+                : {}),
+            })),
           );
           const value = await judge(request.state, request.questions);
-          const reportId = `severity:${item.unit.id}:${item.dimension}`;
-          report.expect(
-            reportId,
-            `${item.unit.id} ${item.dimension} severity`,
-            "unit",
-          );
-          if (value.ok) report.answer(reportId, value.answers.severity);
-          else
-            report.failure(
-              value,
-              [reportId],
-              budget
-                ? budget.kind === "session"
-                  ? "session_budget"
-                  : "call_budget"
-                : undefined,
+          for (const [index, item] of group.entries()) {
+            const id = request.ids[index] as string;
+            const reportId = `severity:${item.unit.id}:${item.dimension}`;
+            report.expect(
+              reportId,
+              `${item.unit.id} ${item.dimension} severity`,
+              "unit",
             );
-          const answer = value.ok ? value.answers.severity : undefined;
-          if (answer?.type === "score") {
-            const suffix = ` · severity ${answer.score.toFixed(1)}/3`;
-            for (const line of item.lines) line.label += suffix;
-          } else
-            unchecked.push(
-              `${unitLabel(item.unit)} ${item.dimension} severity`,
-            );
+            if (value.ok) report.answer(reportId, value.answers[id]);
+            else
+              report.failure(
+                value,
+                [reportId],
+                budget()
+                  ? budget()?.kind === "session"
+                    ? "session_budget"
+                    : "call_budget"
+                  : undefined,
+              );
+            const answer = value.ok ? value.answers[id] : undefined;
+            if (answer?.type === "score") {
+              const suffix = ` · severity ${answer.score.toFixed(1)}/3`;
+              for (const line of item.lines) line.label += suffix;
+            } else
+              unchecked.push(
+                `${unitLabel(item.unit)} ${item.dimension} severity`,
+              );
+          }
         }),
       );
       return finish();
