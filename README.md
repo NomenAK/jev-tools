@@ -161,6 +161,10 @@ File collection is confined to the repository: absolute paths, parent traversal,
 
 On a dirty tree, the extension can check existing Markdown documentation once at run end against changes from `HEAD`, including admitted untracked files (not gitignored, not secret-named), which are sent to the endpoint without an explicit tool call, using at most 8 Jev calls. A flagged existing sentence can request one additional turn to inspect and update it or explain with evidence why it remains correct; a flag does not itself establish falsehood or require a second call. Merely unsure sections do not trigger another turn. `JEV_TOOLS_AUTO_DOCS=0`, missing configuration, invalid/exhausted session budgets or a clean tree skip the check. Errors and timeout do not block the host. This opt-out host feature does not certify documentation completeness. MCP has no hook and requires no manual replacement ritual.
 
+## Command-line check
+
+`jev-check` judges a text on stdin against a JSON rules file with one request and reports through its exit code (0 compliant, 1 a rule broken, 2 not judged), with optional `flags` (statements true of a text to stop) and modes for Claude Code `Stop` and `PreToolUse` hooks. It reads `JEV_TOOLS_URL` and `JEV_TOOLS_API_KEY` from the environment only. See [docs/jev-check.md](docs/jev-check.md).
+
 ## Known limits
 
 Static evidence and probability do not prove execution, safety or completeness. Import closure cannot discover every relationship; dynamic code, unsupported syntax and optional parser failures leave explicit gaps. No findings is not proof that unseen callers or documentation are correct. Test selection considers existing discovered scenarios, not whether a new scenario must be added. Session caching cannot establish the identity or stability of a moving model alias.

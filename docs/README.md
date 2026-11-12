@@ -6,6 +6,7 @@
 - [Getting started](guide/getting-started.md) — first run, setup, first judgment.
 - [Workflows](guide/workflows.md) — which tool for which job.
 - [Troubleshooting](guide/troubleshooting.md) — configuration errors, refusals, limits.
+- [jev-check](jev-check.md) — command-line check of a text against a rules file, with a Claude Code Stop hook mode.
 - Tool references (parameter contracts): [jev_ask](tools/jev_ask.md), [jev_ask_files](tools/jev_ask_files.md), [jev_find_files](tools/jev_find_files.md), [jev_locate_in_file](tools/jev_locate_in_file.md), [jev_check_diff](tools/jev_check_diff.md), [jev_select_tests](tools/jev_select_tests.md).
 
 ## How it works

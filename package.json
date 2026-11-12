@@ -45,12 +45,14 @@
     "docs/tools/jev_check_diff.md",
     "docs/tools/jev_select_tests.md",
     "docs/mcp.md",
+    "docs/jev-check.md",
     "docs/agent-instructions.md",
     "dist/",
     "server.json"
   ],
   "bin": {
-    "jev-agent-tools-mcp": "dist/mcp/main.js"
+    "jev-agent-tools-mcp": "dist/mcp/main.js",
+    "jev-check": "dist/cli/check.js"
   },
   "pi": {
     "extensions": [
