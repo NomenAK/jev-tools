@@ -163,7 +163,7 @@ On a dirty tree, the extension can check existing Markdown documentation once at
 
 ## Command-line check
 
-`jev-check` judges a text on stdin against a JSON rules file with one request and reports through its exit code (0 compliant, 1 a rule broken, 2 not judged), with a mode for Claude Code `Stop` hooks. It reads `JEV_TOOLS_URL` and `JEV_TOOLS_API_KEY` from the environment only. See [docs/jev-check.md](docs/jev-check.md).
+`jev-check` judges a text on stdin against a JSON rules file with one request and reports through its exit code (0 compliant, 1 a rule broken, 2 not judged), with optional `flags` (statements true of a text to stop) and modes for Claude Code `Stop` and `PreToolUse` hooks. It reads `JEV_TOOLS_URL` and `JEV_TOOLS_API_KEY` from the environment only. See [docs/jev-check.md](docs/jev-check.md).
 
 ## Known limits
 

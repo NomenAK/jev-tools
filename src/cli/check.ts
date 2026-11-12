@@ -17,12 +17,17 @@ import { isRecord } from "../result.ts";
 
 const usage = `jev-check - judge a text on stdin against a rules file with one Jev request
 
-Usage: jev-check --rules <file> [--stop-hook] [--json] [--timeout-ms <n>]
-                 [--pass-min <p>] [--fail-max <p>] [--usd-per-mtok <x>]
+Usage: jev-check --rules <file> [--stop-hook | --pre-tool-hook [--ask]] [--json]
+                 [--timeout-ms <n>] [--pass-min <p>] [--fail-max <p>]
+                 [--usd-per-mtok <x>]
 
-Exit codes: 0 every rule passes, 1 a rule is broken, 2 not judged.
+Exit codes: 0 every rule passes and no flag is raised, 1 a rule is broken or a
+flag is raised, 2 not judged.
 With --stop-hook, stdin is a Claude Code Stop hook payload, a refusal exits 2
 (blocking) and every other outcome exits 0 or 1 (never blocking).
+With --pre-tool-hook, stdin is a PreToolUse hook payload and the tool input is
+judged; a refusal exits 2 (denies the call), or with --ask exits 0 and asks
+the user to confirm; every other outcome exits 0 or 1 (never blocking).
 Configuration: JEV_TOOLS_URL, JEV_TOOLS_API_KEY, optional JEV_TOOLS_MODEL.`;
 
 export interface CheckOptions {
@@ -41,14 +46,22 @@ export interface CheckResult {
 interface Args {
   rules: string;
   stopHook: boolean;
+  preToolHook: boolean;
+  ask: boolean;
   json: boolean;
   timeoutMs: number;
   passMin: number;
   failMax: number;
   usdPerMtok?: number;
 }
+type Kind = "rule" | "flag";
+interface Entry {
+  name: string;
+  kind: Kind;
+  statement: string;
+}
 interface Rules {
-  statements: Record<string, string>;
+  entries: Entry[];
   reference?: string;
 }
 type Band = "pass" | "unsure" | "broken" | "unjudged";
@@ -70,8 +83,11 @@ function packageVersion(): string {
 }
 
 function parseArgs(argv: readonly string[]): Args | { exit: string } {
-  const args: Partial<Args> & { stopHook: boolean; json: boolean } = {
+  const args: Partial<Args> &
+    Pick<Args, "stopHook" | "preToolHook" | "ask" | "json"> = {
     stopHook: false,
+    preToolHook: false,
+    ask: false,
     json: false,
   };
   const number = (flag: string, text: string | undefined): number => {
@@ -84,6 +100,8 @@ function parseArgs(argv: readonly string[]): Args | { exit: string } {
     if (arg === "--help" || arg === "-h") return { exit: usage };
     if (arg === "--version") return { exit: packageVersion() };
     if (arg === "--stop-hook") args.stopHook = true;
+    else if (arg === "--pre-tool-hook") args.preToolHook = true;
+    else if (arg === "--ask") args.ask = true;
     else if (arg === "--json") args.json = true;
     else {
       const [flag = "", inline] = arg.startsWith("--")
@@ -114,9 +132,17 @@ function parseArgs(argv: readonly string[]): Args | { exit: string } {
     throw new Error("thresholds must satisfy 0 <= fail-max < pass-min <= 1");
   if (args.stopHook && args.json)
     throw new Error("--json cannot be combined with --stop-hook");
+  if (args.preToolHook && args.json)
+    throw new Error("--json cannot be combined with --pre-tool-hook");
+  if (args.preToolHook && args.stopHook)
+    throw new Error("--pre-tool-hook cannot be combined with --stop-hook");
+  if (args.ask && !args.preToolHook)
+    throw new Error("--ask requires --pre-tool-hook");
   return {
     rules: args.rules,
     stopHook: args.stopHook,
+    preToolHook: args.preToolHook,
+    ask: args.ask,
     json: args.json,
     timeoutMs: args.timeoutMs ?? HOOK_BUDGET_MS,
     passMin,
@@ -137,23 +163,34 @@ function loadRules(file: string): Rules {
         : "rules file is not valid JSON",
     );
   }
-  const rules = isRecord(parsed) ? parsed.rules : undefined;
-  if (!isRecord(rules)) throw new Error('rules file needs a "rules" object');
-  const names = Object.keys(rules);
-  if (names.length < 1 || names.length > MAX_RULES)
-    throw new Error(`rules file needs 1 to ${MAX_RULES} rules`);
-  for (const name of names) {
-    if (!/^[a-z0-9][a-z0-9_-]*$/.test(name))
-      throw new Error(`rule name "${name}" must match [a-z0-9][a-z0-9_-]*`);
-    const statement = rules[name];
-    if (typeof statement !== "string" || !statement.trim())
-      throw new Error(`rule "${name}" needs a nonempty statement`);
+  const content = isRecord(parsed) ? parsed : {};
+  const entries: Entry[] = [];
+  for (const [kind, key] of [
+    ["rule", "rules"],
+    ["flag", "flags"],
+  ] as const) {
+    const map = content[key];
+    if (map === undefined) continue;
+    if (!isRecord(map)) throw new Error(`"${key}" must be an object`);
+    for (const [name, statement] of Object.entries(map)) {
+      if (!/^[a-z0-9][a-z0-9_-]*$/.test(name))
+        throw new Error(
+          `${kind} name "${name}" must match [a-z0-9][a-z0-9_-]*`,
+        );
+      if (typeof statement !== "string" || !statement.trim())
+        throw new Error(`${kind} "${name}" needs a nonempty statement`);
+      if (entries.some((entry) => entry.name === name))
+        throw new Error(`"${name}" appears in both rules and flags`);
+      entries.push({ name, kind, statement });
+    }
   }
-  const reference = (parsed as Record<string, unknown>).reference;
+  if (entries.length < 1 || entries.length > MAX_RULES)
+    throw new Error(`rules file needs 1 to ${MAX_RULES} rules and flags`);
+  const reference = content.reference;
   if (reference !== undefined && typeof reference !== "string")
     throw new Error('"reference" must be a string');
   return {
-    statements: rules as Record<string, string>,
+    entries,
     ...(reference === undefined ? {} : { reference }),
   };
 }
@@ -187,8 +224,68 @@ const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const probability = (p: number) => `p=${p.toFixed(2)}`;
 
+type HookInput = { text: string; subject: string } | { skip: string };
+
+// Reads the text to judge from a hook payload; `skip` explains why there is none.
+function readHookInput(mode: "stop" | "pre", raw: string): HookInput {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    payload = undefined;
+  }
+  if (mode === "stop") {
+    if (
+      !isRecord(payload) ||
+      typeof payload.last_assistant_message !== "string"
+    )
+      return {
+        skip: "no last_assistant_message in hook input; nothing judged",
+      };
+    if (payload.stop_hook_active === true)
+      return { skip: "stop hook already active; nothing judged" };
+    return { text: payload.last_assistant_message, subject: "this message" };
+  }
+  const input = isRecord(payload) ? payload.tool_input : undefined;
+  if (!isRecord(payload) || !isRecord(input))
+    return { skip: "no tool_input in hook input; nothing judged" };
+  const field = ["command", "content", "new_string"]
+    .map((key) => input[key])
+    .find((value) => typeof value === "string");
+  const tool =
+    typeof payload.tool_name === "string" && payload.tool_name
+      ? payload.tool_name
+      : "tool";
+  return {
+    text: typeof field === "string" ? field : JSON.stringify(input),
+    subject: `this ${tool} call`,
+  };
+}
+
+// Statements as written, grouped so that each reads correctly for its kind.
+function describeFailures(entries: Entry[], names: string[]): string {
+  const group = (kind: Kind, label: string) => {
+    const items = entries
+      .filter((entry) => entry.kind === kind && names.includes(entry.name))
+      .map((entry) => `${entry.name}: ${entry.statement}`);
+    return items.length ? [`${label}: ${items.join("; ")}`] : [];
+  };
+  return [
+    ...group("rule", "Broken rules"),
+    ...group("flag", "Raised flags"),
+  ].join("; ");
+}
+
+// One meaning for p everywhere: the probability that the text is acceptable.
+const acceptable = (kind: Kind, p: number) =>
+  kind === "flag" ? Math.round((1 - p) * 1e9) / 1e9 : p;
+
 export async function runCheck(options: CheckOptions): Promise<CheckResult> {
-  const hook = options.argv.includes("--stop-hook");
+  const hookMode = options.argv.includes("--pre-tool-hook")
+    ? "pre"
+    : options.argv.includes("--stop-hook")
+      ? "stop"
+      : undefined;
   const result = (code: number, stdout = "", stderr = ""): CheckResult => ({
     code,
     stdout: stdout && `${stdout}\n`,
@@ -197,7 +294,7 @@ export async function runCheck(options: CheckOptions): Promise<CheckResult> {
   // A hook failure must not block the agent: exit 2 would, so setup errors
   // exit 1 (visible, non-blocking) and judge outages exit 0.
   const usageError = (message: string) =>
-    result(hook ? 1 : 2, "", `jev-check: ${message}`);
+    result(hookMode ? 1 : 2, "", `jev-check: ${message}`);
   let args: Args;
   let rules: Rules;
   try {
@@ -209,29 +306,11 @@ export async function runCheck(options: CheckOptions): Promise<CheckResult> {
     return usageError(error instanceof Error ? error.message : String(error));
   }
   let text = await options.readStdin();
-  if (args.stopHook) {
-    let payload: unknown;
-    try {
-      payload = JSON.parse(text);
-    } catch {
-      payload = undefined;
-    }
-    if (
-      !isRecord(payload) ||
-      typeof payload.last_assistant_message !== "string"
-    )
-      return result(
-        0,
-        "",
-        "jev-check: no last_assistant_message in hook input; nothing judged",
-      );
-    if (payload.stop_hook_active === true)
-      return result(
-        0,
-        "",
-        "jev-check: stop hook already active; nothing judged",
-      );
-    text = payload.last_assistant_message;
+  let subject = "";
+  if (hookMode) {
+    const input = readHookInput(hookMode, text);
+    if ("skip" in input) return result(0, "", `jev-check: ${input.skip}`);
+    ({ text, subject } = input);
   }
   if (!text.trim()) {
     const line = "compliant: empty text, not sent";
@@ -247,7 +326,7 @@ export async function runCheck(options: CheckOptions): Promise<CheckResult> {
             ms: 0,
           }),
         )
-      : result(0, args.stopHook ? "" : line);
+      : result(0, hookMode ? "" : line);
   }
   const config = readConfig(options.env);
   const configError = config
@@ -260,7 +339,7 @@ export async function runCheck(options: CheckOptions): Promise<CheckResult> {
       })()
     : "JEV_TOOLS_URL and JEV_TOOLS_API_KEY must both be set";
   if (!config || configError)
-    return result(args.stopHook ? 0 : 2, "", `jev-check: ${configError}`);
+    return result(hookMode ? 0 : 2, "", `jev-check: ${configError}`);
 
   const now = options.now ?? (() => performance.now());
   const measure = measuring(options.fetch ?? fetch);
@@ -270,15 +349,25 @@ export async function runCheck(options: CheckOptions): Promise<CheckResult> {
     ...(options.sleep ? { sleep: options.sleep } : {}),
   });
   const questions: Record<string, Question> = {};
-  for (const [name, statement] of Object.entries(rules.statements))
-    questions[name] = {
-      type: "bool",
-      instructions: `Does the text in state.text comply with this rule? Rule: ${statement}`,
-      criteria: {
-        true: "The text complies with the rule.",
-        false: "The text breaks the rule.",
-      },
-    };
+  for (const { name, kind, statement } of rules.entries)
+    questions[name] =
+      kind === "rule"
+        ? {
+            type: "bool",
+            instructions: `Does the text in state.text comply with this rule? Rule: ${statement}`,
+            criteria: {
+              true: "The text complies with the rule.",
+              false: "The text breaks the rule.",
+            },
+          }
+        : {
+            type: "bool",
+            instructions: `Is this statement true of the text in state.text? Statement: ${statement}`,
+            criteria: {
+              true: "The statement is true of the text.",
+              false: "The statement is false of the text.",
+            },
+          };
   const state: State = {
     text,
     ...(rules.reference === undefined ? {} : { reference: rules.reference }),
@@ -290,22 +379,20 @@ export async function runCheck(options: CheckOptions): Promise<CheckResult> {
   });
   const ms = Math.round(now() - started);
 
-  const readings: Record<string, { p?: number; band: Band }> = {};
+  const readings: Record<string, { kind: Kind; p?: number; band: Band }> = {};
   let failure = judgment.ok ? undefined : oneLine(judgment.error);
-  for (const name of Object.keys(questions)) {
+  for (const { name, kind } of rules.entries) {
     const answer = judgment.ok ? judgment.answers[name] : undefined;
-    if (answer?.type === "bool")
+    if (answer?.type === "bool") {
+      const p = acceptable(kind, answer.p);
       readings[name] = {
-        p: answer.p,
+        kind,
+        p,
         band:
-          answer.p >= args.passMin
-            ? "pass"
-            : answer.p <= args.failMax
-              ? "broken"
-              : "unsure",
+          p >= args.passMin ? "pass" : p <= args.failMax ? "broken" : "unsure",
       };
-    else {
-      readings[name] = { band: "unjudged" };
+    } else {
+      readings[name] = { kind, band: "unjudged" };
       if (answer?.type === "unjudged") failure ??= oneLine(answer.reason);
     }
   }
@@ -319,7 +406,7 @@ export async function runCheck(options: CheckOptions): Promise<CheckResult> {
   const broken = named("broken");
   const unsure = named("unsure");
   const unjudged = named("unjudged");
-  const total = Object.keys(questions).length;
+  const total = rules.entries.length;
   let verdict: "compliant" | "refused" | "not_judged";
   let line: string;
   if (broken.length) {
@@ -354,22 +441,35 @@ export async function runCheck(options: CheckOptions): Promise<CheckResult> {
     `${ms} ms`,
   ].join(" · ");
 
-  if (args.stopHook) {
-    if (verdict === "refused")
+  if (hookMode) {
+    if (verdict !== "refused")
+      return result(
+        0,
+        "",
+        `${verdict === "not_judged" ? `jev-check: ${line}\n` : ""}${measurement}`,
+      );
+    // Statements usually end with a period; do not add a second one.
+    const failures = describeFailures(rules.entries, broken).replace(/\.$/, "");
+    if (hookMode === "stop")
       return result(
         2,
         "",
-        `jev-check refused this message. Broken rules: ${broken
-          .map((name) => `${name}: ${rules.statements[name]}`)
-          .join(
-            "; ",
-          )}. Rewrite the message so that every rule holds.\n${measurement}`,
+        `jev-check refused ${subject}. ${failures}. Rewrite the message so that every rule holds.\n${measurement}`,
       );
-    return result(
-      0,
-      "",
-      `${verdict === "not_judged" ? `jev-check: ${line}\n` : ""}${measurement}`,
-    );
+    const reason = `jev-check stopped ${subject}. ${failures}.`;
+    return args.ask
+      ? result(
+          0,
+          JSON.stringify({
+            hookSpecificOutput: {
+              hookEventName: "PreToolUse",
+              permissionDecision: "ask",
+              permissionDecisionReason: reason,
+            },
+          }),
+          measurement,
+        )
+      : result(2, "", `${reason}\n${measurement}`);
   }
   const code = verdict === "compliant" ? 0 : verdict === "refused" ? 1 : 2;
   const stdout = args.json

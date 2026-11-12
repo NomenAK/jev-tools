@@ -311,9 +311,9 @@ test("--json prints one JSON line with verdict, per-rule bands and the measureme
   assert.equal(json.verdict, "refused");
   assert.equal(json.reason, "refused: no-em-dash (p=0.04)");
   assert.deepEqual(json.rules, {
-    "no-em-dash": { p: 0.04, band: "broken" },
-    "short-sentences": { p: 0.95, band: "pass" },
-    "plain-words": { p: 0.5, band: "unsure" },
+    "no-em-dash": { kind: "rule", p: 0.04, band: "broken" },
+    "short-sentences": { kind: "rule", p: 0.95, band: "pass" },
+    "plain-words": { kind: "rule", p: 0.5, band: "unsure" },
   });
   assert.equal(json.calls, 1);
   assert.equal(json.questions, 3);
@@ -339,7 +339,7 @@ test("--stop-hook: a refusal exits 2 with the broken rule statement on stderr", 
   assert.equal(out.stdout, "");
   assert.match(
     out.stderr,
-    /^jev-check refused this message\. Broken rules: no-em-dash: The text contains no em dash\.\. Rewrite the message so that every rule holds\.\n/,
+    /^jev-check refused this message\. Broken rules: no-em-dash: The text contains no em dash\. Rewrite the message so that every rule holds\.\n/,
   );
   assert.equal(seen[0]?.body.state.text, "Bad — text");
 });
@@ -413,6 +413,246 @@ test("--stop-hook: setup errors exit 1 (visible, not blocking) and --json is ref
     fetch,
   );
   assert.equal(both.code, 1);
+});
+
+const statement = "The text is a command that creates a billed cloud resource.";
+const flagsOnly = rulesFile(
+  { flags: { "paid-resource": statement } },
+  "flags.json",
+);
+const mixed = rulesFile(
+  {
+    rules: { "plain-words": "The text uses plain words." },
+    flags: {
+      "paid-resource": statement,
+      "data-loss": "The text deletes data.",
+    },
+  },
+  "mixed.json",
+);
+
+test("flags: a flags-only file is accepted and a raised flag reports p as acceptability", async () => {
+  const { fetch } = fakeJev({ "paid-resource": 0.95 });
+  const out = await run(["--rules", flagsOnly], "make it", fetch);
+  assert.equal(out.code, 1);
+  assert.equal(out.stdout, "refused: paid-resource (p=0.05)\n");
+});
+
+test("flags: a low answer means the text is acceptable", async () => {
+  const { fetch } = fakeJev({ "paid-resource": 0.03 });
+  const out = await run(["--rules", flagsOnly], "ls", fetch);
+  assert.equal(out.code, 0);
+  assert.equal(out.stdout, "compliant: 1/1 rules\n");
+});
+
+test("flags: a name in both maps, or a bad flag, exits 2 without a request", async () => {
+  const { fetch, seen } = fakeJev();
+  for (const content of [
+    { rules: { same: "x" }, flags: { same: "y" } },
+    { flags: { "Bad Name": "y" } },
+    { flags: { ok: " " } },
+    { flags: [] },
+    { rules: {}, flags: {} },
+  ]) {
+    const out = await run(
+      ["--rules", rulesFile(content, "bad.json")],
+      "text",
+      fetch,
+    );
+    assert.equal(out.code, 2);
+    assert.equal(lines(out.stderr).length, 1);
+  }
+  assert.equal(seen.length, 0);
+});
+
+test("flags: the wire request carries the positive question", async () => {
+  const { fetch, seen } = fakeJev();
+  await run(["--rules", mixed], "make it", fetch);
+  const questions = (seen[0] as Seen).body.questions;
+  assert.deepEqual(questions["paid-resource"], {
+    type: "noul",
+    instructions: `Is this statement true of the text in state.text? Statement: ${statement}`,
+    criteria: {
+      true: "The statement is true of the text.",
+      false: "The statement is false of the text.",
+    },
+  });
+  assert.match(
+    questions["plain-words"]?.instructions ?? "",
+    /^Does the text in state\.text comply/,
+  );
+});
+
+test("flags: --json carries kind and p is acceptability for both kinds", async () => {
+  const { fetch } = fakeJev({ "paid-resource": 0.9, "data-loss": 0.1 });
+  const out = await run(["--rules", mixed, "--json"], "t", fetch);
+  assert.equal(out.code, 1);
+  const json = JSON.parse(out.stdout);
+  assert.deepEqual(json.rules, {
+    "plain-words": { kind: "rule", p: 0.95, band: "pass" },
+    "paid-resource": { kind: "flag", p: 0.1, band: "broken" },
+    "data-loss": { kind: "flag", p: 0.9, band: "pass" },
+  });
+});
+
+const preInput = (toolInput: unknown, tool = "Bash") =>
+  JSON.stringify({
+    hook_event_name: "PreToolUse",
+    tool_name: tool,
+    tool_input: toolInput,
+  });
+
+test("--pre-tool-hook: a raised flag exits 2 with tool name and statement on stderr", async () => {
+  const { fetch, seen } = fakeJev({ "paid-resource": 0.95 });
+  const out = await run(
+    ["--rules", flagsOnly, "--pre-tool-hook"],
+    preInput({ command: "aws ec2 run-instances", description: "x" }),
+    fetch,
+  );
+  assert.equal(out.code, 2);
+  assert.equal(out.stdout, "");
+  const [reason, measurement, ...rest] = lines(out.stderr);
+  assert.equal(
+    reason,
+    `jev-check stopped this Bash call. Raised flags: paid-resource: ${statement}`,
+  );
+  assert.match(measurement ?? "", /^1 call · /);
+  assert.equal(rest.length, 0);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0]?.body.state.text, "aws ec2 run-instances");
+});
+
+test("--pre-tool-hook --ask: exit 0 with one permissionDecision JSON line", async () => {
+  const { fetch } = fakeJev({ "paid-resource": 0.95 });
+  const out = await run(
+    ["--rules", flagsOnly, "--pre-tool-hook", "--ask"],
+    preInput({ command: "aws ec2 run-instances" }),
+    fetch,
+  );
+  assert.equal(out.code, 0);
+  assert.equal(
+    out.stdout,
+    `${JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "ask",
+        permissionDecisionReason: `jev-check stopped this Bash call. Raised flags: paid-resource: ${statement}`,
+      },
+    })}\n`,
+  );
+  assert.match(out.stderr, /^1 call · /);
+});
+
+test("--pre-tool-hook: groups broken rules and raised flags", async () => {
+  const { fetch } = fakeJev({
+    "plain-words": 0.02,
+    "paid-resource": 0.02,
+    "data-loss": 0.9,
+  });
+  const out = await run(
+    ["--rules", mixed, "--pre-tool-hook"],
+    preInput({ command: "x" }),
+    fetch,
+  );
+  assert.equal(out.code, 2);
+  assert.match(
+    out.stderr,
+    /^jev-check stopped this Bash call\. Broken rules: plain-words: The text uses plain words\.; Raised flags: data-loss: The text deletes data\./,
+  );
+});
+
+test("--pre-tool-hook: judges content, new_string, then the whole input", async () => {
+  const write = fakeJev();
+  await run(
+    ["--rules", flagsOnly, "--pre-tool-hook"],
+    preInput({ file_path: "a.txt", content: "file body" }, "Write"),
+    write.fetch,
+  );
+  assert.equal(write.seen[0]?.body.state.text, "file body");
+  const edit = fakeJev();
+  await run(
+    ["--rules", flagsOnly, "--pre-tool-hook"],
+    preInput({ file_path: "a", old_string: "o", new_string: "new" }, "Edit"),
+    edit.fetch,
+  );
+  assert.equal(edit.seen[0]?.body.state.text, "new");
+  const other = fakeJev();
+  await run(
+    ["--rules", flagsOnly, "--pre-tool-hook"],
+    preInput({ pattern: "x" }, "Grep"),
+    other.fetch,
+  );
+  assert.equal(other.seen[0]?.body.state.text, '{"pattern":"x"}');
+});
+
+test("--pre-tool-hook: compliant, outage and unconfigured never block", async () => {
+  const ok = await run(
+    ["--rules", flagsOnly, "--pre-tool-hook", "--ask"],
+    preInput({ command: "ls" }),
+    fakeJev({ "paid-resource": 0.03 }).fetch,
+  );
+  assert.equal(ok.code, 0);
+  assert.equal(ok.stdout, "");
+  const outage = await run(
+    ["--rules", flagsOnly, "--pre-tool-hook"],
+    preInput({ command: "ls" }),
+    status(500, "down"),
+    { sleep: async () => {} },
+  );
+  assert.equal(outage.code, 0);
+  assert.equal(outage.stdout, "");
+  assert.match(outage.stderr, /not judged/);
+  const unconfigured = await run(
+    ["--rules", flagsOnly, "--pre-tool-hook"],
+    preInput({ command: "ls" }),
+    fakeJev().fetch,
+    { env: {} },
+  );
+  assert.equal(unconfigured.code, 0);
+  assert.match(unconfigured.stderr, /JEV_TOOLS_URL/);
+});
+
+test("--pre-tool-hook: no tool_input, bad JSON or empty text send nothing and exit 0", async () => {
+  const { fetch, seen } = fakeJev({ "paid-resource": 0.95 });
+  for (const input of [
+    JSON.stringify({ tool_name: "Bash" }),
+    JSON.stringify({ tool_name: "Bash", tool_input: "ls" }),
+    "[]",
+    "not json",
+  ]) {
+    const out = await run(
+      ["--rules", flagsOnly, "--pre-tool-hook"],
+      input,
+      fetch,
+    );
+    assert.equal(out.code, 0);
+    assert.equal(lines(out.stderr).length, 1);
+  }
+  const empty = await run(
+    ["--rules", flagsOnly, "--pre-tool-hook"],
+    preInput({ command: "  " }),
+    fetch,
+  );
+  assert.equal(empty.code, 0);
+  assert.equal(empty.stderr, "");
+  assert.equal(seen.length, 0);
+});
+
+test("--ask needs --pre-tool-hook, which excludes --stop-hook and --json", async () => {
+  const { fetch, seen } = fakeJev();
+  const ask = await run(["--rules", rules, "--ask"], "t", fetch);
+  assert.equal(ask.code, 2);
+  assert.match(ask.stderr, /--ask requires --pre-tool-hook/);
+  for (const extra of ["--stop-hook", "--json"]) {
+    const out = await run(
+      ["--rules", rules, "--pre-tool-hook", extra],
+      preInput({ command: "x" }),
+      fetch,
+    );
+    assert.equal(out.code, 1, extra);
+    assert.match(out.stderr, /cannot be combined/);
+  }
+  assert.equal(seen.length, 0);
 });
 
 test("--help and --version print to stdout and exit 0", async () => {
