@@ -28,7 +28,7 @@ function nonempty(value: string | undefined): value is string {
   return value !== undefined && value.trim().length > 0;
 }
 
-function validate(values: ConfigurationValues): void {
+export function validateConfiguration(values: ConfigurationValues): void {
   let validUrl = false;
   let insecureTransport = false;
   try {
@@ -103,7 +103,7 @@ export class ConfigController {
     );
     if (nonempty(this.environment.url) && nonempty(this.environment.apiKey)) {
       const effective = this.values();
-      validate(effective);
+      validateConfiguration(effective);
       this.currentClient = createJevClient(effective);
     }
   }
@@ -153,7 +153,7 @@ export class ConfigController {
       ...this.flags,
       ...this.environment,
     };
-    validate(effective);
+    validateConfiguration(effective);
     const saved = { ...this.saved, ...session };
     if (persist) await this.save(saved);
     const previous = this.values();
@@ -179,7 +179,7 @@ export class ConfigController {
       ...this.environment,
     };
     if (nonempty(effective.url) && nonempty(effective.apiKey)) {
-      validate(effective);
+      validateConfiguration(effective);
       this.currentClient?.clearCache();
       this.currentClient = createJevClient(effective);
     }

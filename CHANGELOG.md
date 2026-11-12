@@ -7,6 +7,14 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 Before 1.0.0, incompatible changes will be called out explicitly. Internal source
 modules are not a stable library API.
 
+## [Unreleased]
+
+### Added
+
+- `jev-check` command: judges a text on stdin against a JSON rules file with one
+  request and reports by exit code, with a `--stop-hook` mode for Claude Code
+  `Stop` hooks. See `docs/jev-check.md`.
+
 ## [0.4.0] - 2026-10-05
 
 ### Added
